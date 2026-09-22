@@ -261,7 +261,7 @@ function dpLookupProposals(items, ctx, conf, rule, evidence) {
   if (!/dependent/i.test(ctx.dataFormat || ''))
     out.push(dpP_('fields', DP_COL.FORMAT, 'dropdown', c, rule, evidence, existing ? '' : 'accept together with the Lookup name and the table rows'));
   out.push(dpP_('fields', DP_COL.LOOKUP, name, c, rule, evidence, note));
-  if (!existing) out.push(dpP_('lookups', 'table', name, c, rule, evidence, note, { values: items }));
+  if (!existing) out.push(dpP_('lookups', 'table', name, c, rule, evidence, note, { values: items, labels: (ctx.specLabels || {}) }));
   return out;
 }
 
@@ -590,6 +590,11 @@ var DP_SPEC = {
 function dpSpecItem_(s) {
   return String(s || '').replace(/\s+(?:LEGACY|DEPRECATED)\b/i, '').replace(/\s*\(.*?\)\s*$/, '').replace(/[.,;]$/, '').trim();
 }
+/** "1 (Scheduled Billing)" -> "Scheduled Billing"; "" when the item has no parenthetical. */
+function dpSpecLabel_(s) {
+  var m = String(s || '').replace(/\s+(?:LEGACY|DEPRECATED)\b/i, '').match(/\(([^()]*)\)\s*$/);
+  return m ? m[1].trim() : '';
+}
 
 /**
  * Returns null when the description shows neither spec shape; otherwise the slot object.
@@ -598,7 +603,7 @@ function dpSpecItem_(s) {
 function dpPreparse_(description) {
   var raw = String(description == null ? '' : description).replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
   var lines = raw.split(/\r?\n/).map(function (s) { return s.trim(); });
-  var slot = { head: '', headText: '', qualifier: '', qualifierHint: '', values: [], dataType: '', length: null, example: '', def: '', format: '',
+  var slot = { head: '', headText: '', qualifier: '', qualifierHint: '', values: [], labels: {}, dataType: '', length: null, example: '', def: '', format: '',
                prose: '', dialect: '', recognized: false };
   var prose = {}, i = 0, m;                                   // line index -> true when the line is prose
 
@@ -667,7 +672,9 @@ function dpPreparse_(description) {
       inList = true; slot.recognized = true;
       var inline = m[1].trim();
       if (inline) {
-        var parts = inline.split(/\s*[●•▪◦|]\s*|\s*[,;\/]\s*/).map(dpSpecItem_).filter(Boolean);
+        var rawParts = inline.split(/\s*[●•▪◦|]\s*|\s*[,;\/]\s*/);
+        var parts = rawParts.map(dpSpecItem_).filter(Boolean);
+        rawParts.forEach(function (rp) { var lb = dpSpecLabel_(rp); if (lb) slot.labels[dpSpecItem_(rp)] = lb; });
         if (parts.length >= 2) { slot.values = slot.values.concat(parts); inList = false; }
         else if (parts.length === 1 && parts[0].split(/\s+/).length <= 4) slot.values.push(parts[0]);
         else { prose[i] = true; inList = false; }
@@ -680,11 +687,19 @@ function dpPreparse_(description) {
       if (inList || slot.values.length) {
         var lg = item.match(DP_SPEC.legend);                        // "vndly - User is storing password"
         var val = dpSpecItem_(lg && lg[1].split(/\s+/).length <= 4 ? lg[1] : item);
-        if (val && val.split(/\s+/).length <= 5 && val.length <= 40) { slot.values.push(val); inList = true; continue; }
+        if (val && val.split(/\s+/).length <= 5 && val.length <= 40) {
+          var lbl = dpSpecLabel_(lg && lg[1].split(/\s+/).length <= 4 ? lg[1] : item) || (lg ? lg[0].slice(lg[1].length).replace(/^\s*[=–—-]\s+/, '').trim() : '');
+          if (lbl) slot.labels[val] = lbl;
+          slot.values.push(val); inList = true; continue;
+        }
       }
       inList = false; prose[i] = true; continue;
     }
-    if (slot.values.length && (m = l.match(DP_SPEC.legend)) && slot.values.map(dpNorm_).indexOf(dpNorm_(m[1])) >= 0) continue;   // "A = Add" explains a value
+    if (slot.values.length && (m = l.match(DP_SPEC.legend)) && slot.values.map(dpNorm_).indexOf(dpNorm_(m[1])) >= 0) {        // "A = Add" explains a value
+      var lv = slot.values[slot.values.map(dpNorm_).indexOf(dpNorm_(m[1]))];
+      slot.labels[lv] = l.slice(l.indexOf(m[1]) + m[1].length).replace(/^\s*[=–—-]\s+/, '').trim();
+      continue;
+    }
     if (inList && l.split(/\s+/).length <= 4 && l.length <= 40 && !/[.:]$/.test(l)) {   // "Options:" then bare lines
       slot.values.push(dpSpecItem_(l)); continue;
     }
@@ -760,6 +775,10 @@ function dpSpecProposals_(spec, ctx) {
   // ---- data type (spec word + example shape)
   var st = dpSpecType_(spec.dataType, ex);
   var type = st.type, typeNote = st.note;
+  if (spec.values.length >= 2 && type && type !== 'string' && type !== 'boolean') {
+    typeNote = dpJoinNote_(typeNote, 'the spec says ' + spec.dataType + ', but a field with a fixed list of values is a code. Codes are text even when they look like numbers: a dropdown of 1 / 2 must stay "1" / "2" to match its lookup.');
+    type = 'string';
+  }
   ev = (spec.dataType ? 'Data Type: ' + spec.dataType : '') + (ex ? (spec.dataType ? ' / ' : '') + 'Example: ' + ex : '');
   if (/^0\d+$/.test(ex)) {
     type = 'string';
@@ -796,9 +815,10 @@ function dpSpecProposals_(spec, ctx) {
     out.push(dpP_('fields', DP_COL.NUMERIC, '<= ' + dpNum_(n[1]), 'high', rule, spec.dataType));
   }
 
-  // ---- allowed values -> dropdown + lookup table
+  // ---- allowed values -> dropdown + lookup table (labels ride along: "1 (Scheduled Billing)" -> Label "Scheduled Billing")
   if (spec.values.length >= 2) {
     var vals = spec.values;
+    ctx.specLabels = spec.labels || {};
     if (vals.every(function (v) { return /^(true|false)$/i.test(v); }) && type === 'boolean') { /* boolean already covers it */ }
     else dpLookupProposals(vals, ctx, 'high', rule, 'list of ' + vals.length + ': ' + vals.join(', ')).forEach(function (p) {
       if (p.column === DP_COL.FORMAT) p.note = dpJoinNote_(p.note, 'without it, suppliers can type anything here');
