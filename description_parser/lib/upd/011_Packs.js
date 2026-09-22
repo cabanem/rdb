@@ -121,12 +121,14 @@ Packs._readTable = function(sheet, anchors, headers, keyHeader) {
 
 /** Find the header row and a header -> column index map. Returns null when no anchor is found. */
 Packs._locate = function(data, anchors, headers) {
+  var norm = function(v) { return String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, ' '); };
+  var wantA = anchors.map(norm), wantH = headers.map(norm);
   for (var r = 0; r < Math.min(data.length, 40); r++) {
-    var cells = data[r].map(function(v) { return String(v || '').trim(); });
-    var hit = anchors.some(function(a) { return cells.indexOf(a) >= 0; });
+    var cells = data[r].map(norm);
+    var hit = wantA.some(function(a) { return cells.indexOf(a) >= 0; });
     if (!hit) continue;
     var cols = {};
-    headers.forEach(function(h) { var i = cells.indexOf(h); if (i >= 0) cols[h] = i; });
+    headers.forEach(function(h, k) { var i = cells.indexOf(wantH[k]); if (i >= 0) cols[h] = i; });
     if (cols[headers[0]] === undefined) continue;                  // anchor matched but the header row is elsewhere
     return { headerRow: r, cols: cols };
   }
@@ -229,12 +231,21 @@ Packs.apply = function(ss, opts) {
 
     var plan = Stage.run('plan', function() { return Packs.plan(pack, opts.answers, opts.scope, opts.mode); });
 
-    Stage.run('write', function() {
-      Packs._writeTable(ss.getSheetByName(config.sheets.fields),      ['_pk_fields_', 'Field name'],             PACK_FIELD_HEADERS,  plan.fields);
-      Packs._writeTable(ss.getSheetByName(config.sheets.validations), ['_pk_rules_', 'Target field'],            PACK_RULE_HEADERS,   plan.rules);
-      Packs._writeTable(ss.getSheetByName(config.sheets.lookups),     ['_pk_lookup_table_', 'Table name'],       PACK_LOOKUP_HEADERS, plan.lookups);
-      Packs._stamp(ss, plan.stamps);
+    var written = {};
+    Stage.run('write-fields', function() {
+      written.fields = Packs._writeTable(ss.getSheetByName(config.sheets.fields), ['_pk_fields_', 'Field name'], PACK_FIELD_HEADERS, plan.fields);
     });
+    Stage.run('write-rules', function() {
+      written.rules = Packs._writeTable(ss.getSheetByName(config.sheets.validations), ['_pk_rules_', 'Target field'], PACK_RULE_HEADERS, plan.rules);
+    });
+    Stage.run('write-lookups', function() {
+      // MERGE: the master ships shared tables (countries, months, ...) that no pack carries. Replace only the tables
+      // this pack carries; keep every other table; append the pack's rows after the existing ones.
+      written.lookups = Packs._mergeLookups(ss.getSheetByName(config.sheets.lookups), plan.lookups);
+    });
+    Stage.run('stamp', function() { Packs._stamp(ss, plan.stamps); });
+    log('INFO', 'Wrote ' + written.fields.rows + ' field rows from row ' + written.fields.firstRow + ', ' + written.rules.rows + ' rule rows from row ' +
+        written.rules.firstRow + ', ' + written.lookups.rows + ' lookup rows from row ' + written.lookups.firstRow + ' (' + written.lookups.kept + ' existing rows kept).');
 
     Stage.run('primary-key-backfill', function() { return PrimaryKey.backfill(ss); });
     var validation = Stage.run('validate', function() { return Validate.run(ss); });
@@ -273,6 +284,36 @@ Packs._writeTable = function(sheet, anchors, headers, rows) {
     return line;
   });
   sheet.getRange(first, 1, grid.length, width).setValues(grid);
+  return { rows: grid.length, firstRow: first };
+};
+
+/**
+ * Lookups are merged, not replaced. Existing rows whose Table name the pack carries are removed; every other
+ * existing row is kept and compacted to the top; the pack's rows go after them. Returns { rows, firstRow, kept }.
+ */
+Packs._mergeLookups = function(sheet, rows) {
+  if (!sheet) throw new Error('Lookups sheet missing.');
+  var data = sheet.getDataRange().getValues();
+  var loc = Packs._locate(data, ['_pk_lookup_table_', 'Table name'], PACK_LOOKUP_HEADERS);
+  if (!loc) throw new Error('Could not find the header row (_pk_lookup_table_ / Table name) on ' + sheet.getName());
+  var tcol = loc.cols['Table name'];
+  var packTables = {}; rows.forEach(function(r) { packTables[String(r['Table name']).trim().toLowerCase()] = true; });
+  var keep = [];
+  for (var r = loc.headerRow + 1; r < data.length; r++) {
+    var t = String(data[r][tcol] || '').trim();
+    if (!t) continue;                                             // stray cells with no Table name are dropped
+    if (!packTables[t.toLowerCase()]) keep.push(data[r]);
+  }
+  var first = loc.headerRow + 2, last = sheet.getLastRow(), width = sheet.getLastColumn();
+  if (last >= first) sheet.getRange(first, 1, last - first + 1, width).clearContent();
+  var grid = keep.map(function(row) { var line = row.slice(0, width); while (line.length < width) line.push(''); return line; });
+  rows.forEach(function(row) {
+    var line = []; for (var c = 0; c < width; c++) line.push('');
+    PACK_LOOKUP_HEADERS.forEach(function(h) { var c = loc.cols[h]; if (c !== undefined) line[c] = row[h] === undefined ? '' : row[h]; });
+    grid.push(line);
+  });
+  if (grid.length) sheet.getRange(first, 1, grid.length, width).setValues(grid);
+  return { rows: rows.length, firstRow: first + keep.length, kept: keep.length };
 };
 
 /** Add or update meta rows in _developer_settings: category 'meta', keys pack_id, pack_version, collection_mode, pack_applied_at. */
