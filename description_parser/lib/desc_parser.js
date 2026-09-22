@@ -13,7 +13,7 @@
  *
  * Lint rows: when a pasted VMS spec disagrees with a cell the analyst already filled (Required ticked
  * but the spec says Optional; Data type "date" but the spec says Character (4) with example 0214), the
- * review tab shows a CONTRADICTION / CHECK row with confidence "lint". They are never pre-ticked.
+ * review tab shows a "Check:" row with confidence "lint", phrased as a question. They are never pre-ticked.
  * Accepting one is an explicit overwrite of that cell. Rows with no automatic fix are skipped by Apply.
  *
  * Shape discovery — no column letters or row numbers are hard-coded:
@@ -287,8 +287,8 @@ function dpReviewLine_(p, entry, shape, settings) {
     current = r.v[p.column]; if (current == null) current = '';
     if (p.value != null) { var lerr = dpValidateFieldValue(p, shape.vocab); if (lerr) { note = dpJoinNote_(note, 'REJECTED: ' + lerr); p.value = null; } }
     target = names.fields; column = p.column;
-    display = p.value == null ? '(no automatic fix — edit the cell by hand)' : p.value;
-    note = (p.severity === 'error' ? 'CONTRADICTION: ' : 'CHECK: ') + note + (p.value == null ? '' : ' Accepting this row overwrites the cell.');
+    display = p.value == null ? '(decide by hand — no value to apply)' : p.value;
+    note = 'Check: ' + note + (p.value == null ? '' : ' Ticking this row applies the change.');
     var lpayload = { sheet: 'fields', column: p.column, value: p.value, row: r.row, fieldName: entry.ctx.fieldName, lint: true };
     return [false, 'pending', r.row, entry.ctx.fieldName, target, column, display, current, 'lint', p.rule, p.evidence, note, JSON.stringify(lpayload)];
   }
@@ -376,6 +376,11 @@ function dpApply(overrides) {
   data[0].forEach(function (h, i) { col[h] = i; });
   var status = data.map(function (row) { return [row[col.Status], row[col.Note]]; });
   var lookupAppends = {}, ruleAppends = [];
+  var lookupTicked = {};                                            // field -> a Lookup name row is accepted in this run
+  for (var k = 1; k < data.length; k++) {
+    if (data[k][col.Accept] !== true || data[k][col.Status] !== 'pending') continue;
+    try { var q = JSON.parse(data[k][col.Payload]); if (q.sheet === 'fields' && q.column === DP_COL.LOOKUP) lookupTicked[q.fieldName] = true; } catch (ignore) {}
+  }
   var counts = { applied: 0, skipped: 0, failed: 0 };
   var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
 
@@ -393,7 +398,10 @@ function dpApply(overrides) {
       if (p.sheet === 'fields') {
         var target = shape.fields.rows.filter(function (x) { return x.row === p.row; })[0];
         if (!target || dpNorm_(target.v[DP_COL.NAME]) !== dpNorm_(p.fieldName)) { finish(i, 'skipped', 'row ' + p.row + ' no longer holds "' + p.fieldName + '" — rescan'); continue; }
-        if (p.lint && p.value == null) { finish(i, 'skipped', 'no automatic fix — edit the cell by hand'); continue; }
+        if (p.lint && p.value == null) { finish(i, 'skipped', 'decide by hand — nothing to apply'); continue; }
+        if (p.column === DP_COL.FORMAT && p.value === 'dropdown' && !String(target.v[DP_COL.LOOKUP] || '').trim() && !lookupTicked[p.fieldName]) {
+          finish(i, 'skipped', 'a dropdown needs a Lookup name — tick that row (and the table rows) too'); continue;
+        }
         if (typeof p.value !== 'boolean' && String(edited).trim() !== String(p.value)) p.value = String(edited).trim();
         var err = dpValidateFieldValue(p, shape.vocab);
         if (err) { finish(i, 'failed', err); continue; }
