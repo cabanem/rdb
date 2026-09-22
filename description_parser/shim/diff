@@ -1,0 +1,40 @@
+--- bound_sdc-shim/main.js	2026-09-22 13:16:38.026185665 +0000
++++ /mnt/user-data/outputs/integration/bound_sdc-shim/main.js	2026-09-22 13:17:54.430800280 +0000
+@@ -50,9 +50,12 @@
+     .addSeparator()
+     .addItem('Update configuration',           'updateWorkspace')
+     .addSeparator()
+-    .addSubMenu(DP.dpMenu(ui))
+     .addSubMenu(SM_additional);
+ 
++  // Description parser lives in its own library (identifier DP). Guarded so a workbook whose shim
++  // has not added that library still gets the SDC menu instead of a failed onOpen.
++  if (typeof DP !== 'undefined') SM_implementation.addSubMenu(DP.dpMenu(ui));
++
+ 
+   // 3. Add the conditional items to the SM_implementation submenu
+   if (SDC.Migrations.isMigrationNeeded(ss)) {
+--- bound_sdc-shim/description_parser.js	2026-09-22 13:16:38.026102947 +0000
++++ /mnt/user-data/outputs/integration/bound_sdc-shim/description_parser.js	2026-09-22 13:17:54.431156000 +0000
+@@ -1,7 +1,17 @@
++/**
++ * Description parser wrappers (library identifier: DP).
++ * Menu items resolve in the container's global scope, so each library entry point needs a same-named wrapper here.
++ * The library reads its own Script Properties, not this project's, so the DP_* properties are passed in.
++ */
+ function dpScan()       { DP.dpScan(dpShimProps_()); }
+-function dpApply()      { DP.dpApply(dpShimProps_()) }
++function dpApply()      { DP.dpApply(dpShimProps_()); }
+ function dpAcceptHigh() { DP.dpAcceptHigh(dpShimProps_()); }
+-function dpClear()      { DP.dpClear(dpShimProps_()) };
++function dpClear()      { DP.dpClear(dpShimProps_()); }
+ function dpRunTests()   { DP.dpRunTests(); }
+ 
+-function dpShimProps_() { return PropertiesService.getScriptProperties().getProperties(); }
+\ No newline at end of file
++/** Only the DP_* properties are meaningful to the library; it ignores the rest. */
++function dpShimProps_() {
++  var all = PropertiesService.getScriptProperties().getProperties(), out = {};
++  Object.keys(all).forEach(function (k) { if (/^DP_/.test(k)) out[k] = all[k]; });
++  return out;
++}
