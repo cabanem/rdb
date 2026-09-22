@@ -317,7 +317,7 @@ function dpReviewLine_(p, entry, shape, settings) {
   }
 
   var accept = settings.ACCEPT_BY_DEFAULT.indexOf(p.confidence) >= 0 && !/REJECTED|already has a value/.test(note);
-  var payload = { sheet: p.sheet, column: p.column, value: p.value, values: p.values, row: r.row, fieldName: entry.ctx.fieldName };
+  var payload = { sheet: p.sheet, column: p.column, value: p.value, values: p.values, labels: p.labels, row: r.row, fieldName: entry.ctx.fieldName };
   return [accept, 'pending', r.row, entry.ctx.fieldName, target, column, display, current, p.confidence, p.rule, p.evidence, note, JSON.stringify(payload)];
 }
 
@@ -421,7 +421,7 @@ function dpApply(overrides) {
         if (ctx.lookupTables[p.value]) { finish(i, 'skipped', 'table already exists'); continue; }
         var vals = String(edited).split(/\s*\|\s*/).map(function (x) { return x.trim(); }).filter(Boolean);
         if (vals.length < 2) { finish(i, 'failed', 'need at least two values'); continue; }
-        lookupAppends[p.value] = { values: vals, i: i };
+        lookupAppends[p.value] = { values: vals, labels: p.labels || {}, i: i };
 
       } else if (p.sheet === 'rules') {
         var m = String(edited).match(/^(.*?)\s*=\s*(.*)$/);
@@ -438,7 +438,7 @@ function dpApply(overrides) {
     lookupAppends[name].values.forEach(function (v) {
       var row = new Array(lk.header.length).fill('');
       var put = function (h, val) { if (lk.cols[h] != null) row[lk.cols[h]] = val; };
-      put('Table name', name); put(lk.pkKey, Utilities.getUuid()); put('Code', v); put('Value', v);
+      put('Table name', name); put(lk.pkKey, Utilities.getUuid()); put('Code', v); put('Value', v); put('Label', lookupAppends[name].labels[v] || '');
       put('Record active?', dpBoolLike_(lk, 'Record active?', true));
       put('Project specific?', dpBoolLike_(lk, 'Project specific?', settings.NEW_LOOKUP_PROJECT_SPECIFIC));
       lkRows.push(row);
