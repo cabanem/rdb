@@ -243,22 +243,25 @@ DP_EXTRACTORS.push({
  * Given a list of values: set Data format = dropdown, point Lookup name at an existing table
  * whose values match, or propose a new table named after the field.
  */
+/**
+ * The dropdown, the Lookup name and the new table are ONE decision, so all three carry the same confidence:
+ * accepting the dropdown without its table leaves the config invalid. A list under an explicit label ("Allowed
+ * values:", "Must be one of:") is exact, so a new table from it is 'high'; a list inferred from prose ("(Yes/No)")
+ * deserves a look ('medium').
+ */
 function dpLookupProposals(items, ctx, conf, rule, evidence) {
   var out = [];
-  if (!/dependent/i.test(ctx.dataFormat || ''))
-    out.push(dpP_('fields', DP_COL.FORMAT, 'dropdown', conf, rule, evidence));
-
   var existing = dpFindLookupTable_(items, ctx);
-  if (existing) {
-    out.push(dpP_('fields', DP_COL.LOOKUP, existing, conf, rule, evidence, 'matches existing table'));
-    return out;
+  var name = existing || dpSlug_(ctx.fieldName), note = existing ? 'matches existing table' : 'new table (' + items.length + ' values)', c = conf;
+  if (!existing) {
+    var labelled = /^spec:/.test(rule || '') || /\b(?:values?\s*allowed|allowed\s*values?|valid\s*values?|permitted\s*values?|accepted\s*values?|must\s*be\s*one\s*of|can\s*be\s*one\s*of|one\s*of|options?)\s*[:=]/i.test(evidence || '');
+    if (!labelled && conf === 'high') c = 'medium';                       // an inferred list ("(Yes/No)") deserves a look
+    if (ctx.lookupTables && ctx.lookupTables[name]) { name += '_2'; note += '; a table named ' + dpSlug_(ctx.fieldName) + ' already exists with different values'; c = 'low'; }
   }
-  var name = dpSlug_(ctx.fieldName);
-  var note = 'new table (' + items.length + ' values)';
-  var newConf = conf === 'high' ? 'medium' : conf;                     // a brand-new table always deserves a look
-  if (ctx.lookupTables && ctx.lookupTables[name]) { name += '_2'; note += '; a table named ' + dpSlug_(ctx.fieldName) + ' already exists with different values'; newConf = 'low'; }
-  out.push(dpP_('fields', DP_COL.LOOKUP, name, newConf, rule, evidence, note));
-  out.push(dpP_('lookups', 'table', name, newConf, rule, evidence, note, { values: items }));
+  if (!/dependent/i.test(ctx.dataFormat || ''))
+    out.push(dpP_('fields', DP_COL.FORMAT, 'dropdown', c, rule, evidence, existing ? '' : 'accept together with the Lookup name and the table rows'));
+  out.push(dpP_('fields', DP_COL.LOOKUP, name, c, rule, evidence, note));
+  if (!existing) out.push(dpP_('lookups', 'table', name, c, rule, evidence, note, { values: items }));
   return out;
 }
 
@@ -716,7 +719,7 @@ function dpSpecType_(rawType, example) {
   else if (/^(integer|int|number|numeric|long)/.test(t)) type = /\.\d/.test(example) ? 'float (2)' : 'integer';
   else if (/^bool/.test(t)) type = 'boolean';
   else if (/^date/.test(t) && !/time/.test(t)) type = 'date';
-  else if (/^(time|datetime|date\/time)/.test(t)) note = 'spec type "' + rawType + '" has no equivalent here — leave as string and add a regex if needed';
+  else if (/^(time|datetime|date\/time)/.test(t)) note = 'The spec type "' + rawType + '" has no equivalent here. Keep it as text and add a regex for the shape?';
   else if (/^(picklist|dropdown|list)/.test(t)) type = 'string';
   if (type === 'integer' && /\.\d/.test(example)) note = 'spec says ' + rawType + ' but the example has decimals';
   return { type: type, note: note };
@@ -760,7 +763,7 @@ function dpSpecProposals_(spec, ctx) {
   ev = (spec.dataType ? 'Data Type: ' + spec.dataType : '') + (ex ? (spec.dataType ? ' / ' : '') + 'Example: ' + ex : '');
   if (/^0\d+$/.test(ex)) {
     type = 'string';
-    typeNote = dpJoinNote_(typeNote, 'the example "' + ex + '" starts with 0 — as a number Excel would store ' + Number(ex) + '; text keeps it');
+    typeNote = dpJoinNote_(typeNote, 'The example "' + ex + '" starts with 0. As a number Excel would store ' + Number(ex) + '; text keeps it.');
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(ex)) { type = 'date'; out.push(dpP_('fields', DP_COL.FORMAT, 'date (YYYY-MM-DD)', 'high', rule, 'Example: ' + ex)); }
   if (/^(true|false)$/i.test(ex)) type = 'boolean';
@@ -768,7 +771,7 @@ function dpSpecProposals_(spec, ctx) {
   if (type) {
     if (typeEmpty) out.push(dpP_('fields', DP_COL.TYPE, type, 'high', rule, ev, typeNote));
     else if (dpNorm_(ctx.dataType) !== dpNorm_(type))
-      out.push(dpLint_(DP_COL.TYPE, type, 'error', rule, ev, 'Data type is "' + ctx.dataType + '" but the spec says "' + (spec.dataType || 'Example: ' + ex) + '". ' + (typeNote || 'The template will validate against the wrong type.')));
+      out.push(dpLint_(DP_COL.TYPE, type, 'error', rule, ev, 'The spec says "' + (spec.dataType || 'Example: ' + ex) + '"; the sheet says ' + ctx.dataType + '. Change it to ' + type + '? ' + (typeNote || 'As set, the template validates against the wrong type.')));
   } else if (typeNote && typeEmpty) {
     out.push(dpLint_(DP_COL.TYPE, null, 'warn', rule, ev, typeNote));
   }
@@ -798,7 +801,7 @@ function dpSpecProposals_(spec, ctx) {
     var vals = spec.values;
     if (vals.every(function (v) { return /^(true|false)$/i.test(v); }) && type === 'boolean') { /* boolean already covers it */ }
     else dpLookupProposals(vals, ctx, 'high', rule, 'list of ' + vals.length + ': ' + vals.join(', ')).forEach(function (p) {
-      if (p.column === DP_COL.FORMAT) p.note = dpJoinNote_(p.note, 'without a dropdown, suppliers can type anything here');
+      if (p.column === DP_COL.FORMAT) p.note = dpJoinNote_(p.note, 'without it, suppliers can type anything here');
       out.push(p);
     });
   }
@@ -809,21 +812,21 @@ function dpSpecProposals_(spec, ctx) {
   if (spec.head === 'required') {
     if (ctx.required === false) out.push(dpP_('fields', DP_COL.REQUIRED, true, 'high', rule, headEv, 'the spec marks this field required'));
   } else if (spec.head === 'optional') {
-    if (curReq) out.push(dpLint_(DP_COL.REQUIRED, false, 'error', rule, headEv, 'Required is ticked but the spec says Optional. As configured, suppliers cannot leave this blank and valid rows will be rejected.'));
+    if (curReq) out.push(dpLint_(DP_COL.REQUIRED, false, 'error', rule, headEv, 'The spec says Optional. Untick Required? As set, suppliers cannot leave this blank and valid rows will be rejected.'));
   } else if (spec.head === 'conditional') {
     var r = dpQualifierRule_(spec.qualifier, ctx, rule, spec.qualifier || headEv);
     if (r) out.push(r);
     if (r && r.confidence === 'low') r = null;                   // could not be read into a rule: treat as "no rule" below
     if (curReq) out.push(dpLint_(DP_COL.REQUIRED, false, 'error', rule, headEv + (spec.qualifier ? ' — ' + spec.qualifier : ''),
-      r ? 'Required is ticked but the spec makes it conditional. A rule in 4_complex_validations is proposed instead — accept both.'
-        : 'Required is ticked but the spec makes it conditional on something the sheet cannot check (' + (spec.qualifier || spec.qualifierHint || 'see description') + '). Decide for this project, then tick or clear Required.'));
+      r ? 'The spec makes this conditional. Untick Required and accept the proposed rule in 4_complex_validations instead?'
+        : 'The spec makes this conditional on something the sheet cannot check (' + (spec.qualifier || spec.qualifierHint || 'see description') + '). Is it required for this project? If not, untick it.'));
     else if (!r && ctx.required === false) out.push(dpLint_(DP_COL.REQUIRED, null, 'warn', rule, headEv + (spec.qualifier ? ' — ' + spec.qualifier : ''),
-      'the spec makes this conditional (' + (spec.qualifier || spec.qualifierHint || 'see description') + ') and no rule could be derived. Decide for this project: tick Required, or leave it optional.'));
+      'The spec makes this conditional (' + (spec.qualifier || spec.qualifierHint || 'see description') + ') and no rule could be derived. Is it required for this project? If so, tick Required.'));
   }
 
   // ---- sanity: spec says Character but the sheet says date (the leading-zero trap in the other direction)
   if (!type && ctx.dataType === 'date' && /^(char|character|string)/i.test(spec.dataType))
-    out.push(dpLint_(DP_COL.TYPE, 'string', 'warn', rule, 'Data Type: ' + spec.dataType, 'the spec says text, the sheet says date'));
+    out.push(dpLint_(DP_COL.TYPE, 'string', 'warn', rule, 'Data Type: ' + spec.dataType, 'The spec says text; the sheet says date. Change it to string?'));
 
   return out;
 }
