@@ -13,7 +13,7 @@
  *
  * Pipeline (Packs.apply):
  *   Config.build -> Packs.read -> Packs.plan -> write tabs (under a document lock) ->
- *   stamp _developer_settings -> PrimaryKey.backfill -> Validate.run
+ *   stamp _developer_settings -> PrimaryKey.backfill (fills any id still blank) -> Validate.run
  *
  * Public:
  *   Packs.list(config)                          -> [{ fileId, name, pack_id, vms, record_type, pack_version, vms_spec_date }]
@@ -130,7 +130,11 @@ Packs._locate = function(data, anchors, headers) {
     var cols = {};
     headers.forEach(function(h, k) { var i = cells.indexOf(wantH[k]); if (i >= 0) cols[h] = i; });
     if (cols[headers[0]] === undefined) continue;                  // anchor matched but the header row is elsewhere
-    return { headerRow: r, cols: cols };
+    // primary-key column: the "_pk_..." header, or (older 5_lookups layout) the header-less column right after Table name
+    var pkCol = -1;
+    cells.forEach(function(c, i) { if (pkCol < 0 && /^_pk_/.test(c)) pkCol = i; });
+    if (pkCol < 0 && cols['Table name'] !== undefined && cells[cols['Table name'] + 1] === '') pkCol = cols['Table name'] + 1;
+    return { headerRow: r, cols: cols, pkCol: pkCol };
   }
   return null;
 };
@@ -266,7 +270,10 @@ Packs.apply = function(ss, opts) {
 
 /**
  * Replace every data row under the anchored header with rows. Clears values only (formats, validations and the
- * header stay). Columns are written by header name; the primary-key column is left blank for PrimaryKey.backfill.
+ * header stay). Columns are written by header name. Every written row gets a fresh id in the primary-key column:
+ * the connector expects one on 4_fields, 5_lookups AND 4_complex_validations, and PrimaryKey.backfill does not
+ * cover the rules tab. Text columns are set to plain-text format first, so a code like "1" is not turned into the
+ * number 1 by setValues.
  */
 Packs._writeTable = function(sheet, anchors, headers, rows) {
   if (!sheet) throw new Error('Sheet missing for headers ' + headers[0]);
@@ -277,14 +284,33 @@ Packs._writeTable = function(sheet, anchors, headers, rows) {
   var last = sheet.getLastRow();
   var width = sheet.getLastColumn();
   if (last >= first) sheet.getRange(first, 1, last - first + 1, width).clearContent();
-  if (!rows.length) return;
-  var grid = rows.map(function(row) {
-    var line = []; for (var c = 0; c < width; c++) line.push('');
-    headers.forEach(function(h) { var c = loc.cols[h]; if (c !== undefined) line[c] = row[h] === undefined ? '' : row[h]; });
-    return line;
-  });
+  if (!rows.length) return { rows: 0, firstRow: first };
+  var grid = rows.map(function(row) { return Packs._line(row, headers, loc, width, true); });
+  Packs._textFormat(sheet, first, grid.length, headers, loc);
   sheet.getRange(first, 1, grid.length, width).setValues(grid);
   return { rows: grid.length, firstRow: first };
+};
+
+/** One sheet row from a { header: value } object; stamps a new id in the pk column when asked. */
+Packs._line = function(row, headers, loc, width, withId) {
+  var line = []; for (var c = 0; c < width; c++) line.push('');
+  headers.forEach(function(h) {
+    var c = loc.cols[h]; if (c === undefined) return;
+    var v = row[h]; if (v === undefined || v === null) v = '';
+    if (!PACK_BOOL_FIELDS[h] && typeof v !== 'boolean') v = String(v);   // codes and condition values stay text
+    line[c] = v;
+  });
+  if (withId && loc.pkCol >= 0 && loc.pkCol < width) line[loc.pkCol] = Utilities.getUuid();
+  return line;
+};
+
+/** Plain-text number format on every non-boolean header column of the rows about to be written. */
+Packs._textFormat = function(sheet, first, count, headers, loc) {
+  headers.forEach(function(h) {
+    var c = loc.cols[h];
+    if (c === undefined || PACK_BOOL_FIELDS[h]) return;
+    sheet.getRange(first, c + 1, count, 1).setNumberFormat('@');
+  });
 };
 
 /**
@@ -307,11 +333,8 @@ Packs._mergeLookups = function(sheet, rows) {
   var first = loc.headerRow + 2, last = sheet.getLastRow(), width = sheet.getLastColumn();
   if (last >= first) sheet.getRange(first, 1, last - first + 1, width).clearContent();
   var grid = keep.map(function(row) { var line = row.slice(0, width); while (line.length < width) line.push(''); return line; });
-  rows.forEach(function(row) {
-    var line = []; for (var c = 0; c < width; c++) line.push('');
-    PACK_LOOKUP_HEADERS.forEach(function(h) { var c = loc.cols[h]; if (c !== undefined) line[c] = row[h] === undefined ? '' : row[h]; });
-    grid.push(line);
-  });
+  rows.forEach(function(row) { grid.push(Packs._line(row, PACK_LOOKUP_HEADERS, loc, width, true)); });
+  if (rows.length) Packs._textFormat(sheet, first + keep.length, rows.length, PACK_LOOKUP_HEADERS, loc);
   if (grid.length) sheet.getRange(first, 1, grid.length, width).setValues(grid);
   return { rows: rows.length, firstRow: first + keep.length, kept: keep.length };
 };
