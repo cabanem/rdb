@@ -45,11 +45,16 @@ for m in re.finditer(r'<section id="([^"]+)" class="level1">\s*<h1>(.*?)</h1>(.*
 # ---- 2. hotspots: numbered paragraphs in "Reading the page" ---------------------------------
 reading = next(s for s in sections if s['id'] == 'reading-the-page')
 overview = next(s for s in sections if s['id'] == 'what-this-page-is')
-chunks = re.split(r'(?=<p><strong>\d+ — )', reading['body'])
+# A numbered paragraph is "**N — Title.**" — any dash (—, –, -) with spaces around it is accepted, since
+# editors like to swap them.
+NUMBERED = r'<p><strong>(\d+)\s*[—–-]\s*(.*?)\.?</strong>\s*(.*?)</p>(.*)'
+chunks = re.split(r'(?=<p><strong>\d+\s*[—–-]\s)', reading['body'])
 intro = chunks[0].strip()
 hotspots = []
 for c in chunks[1:]:
-    mm = re.match(r'<p><strong>(\d+) — (.*?)\.?</strong>\s*(.*?)</p>(.*)', c, re.S)
+    mm = re.match(NUMBERED, c, re.S)
+    if not mm:
+        continue
     n, title, first, rest = int(mm.group(1)), mm.group(2), mm.group(3).strip(), mm.group(4).strip()
     body = ('<p>%s</p>' % first if first else '') + rest
     hotspots.append({'n': n, 'title': title, 'body': body})
@@ -57,6 +62,14 @@ for c in chunks[1:]:
 # coordinates as percentages of the CLEAN screenshot (badges are drawn by the page, not baked in)
 clean_src, (_, marks) = next(iter(CALLOUTS.items()))
 w, h = Image.open(clean_src).size
+
+# The two sources must agree on the numbers, or a badge would point at nothing. Say so precisely.
+in_md = sorted(s['n'] for s in hotspots)
+in_py = sorted(n for n, _, _ in marks)
+if in_md != in_py:
+    sys.exit('Badge numbers disagree.\n  annotate.py CALLOUTS has: %s\n  guide.md "Reading the page" has: %s\n'
+             'Every badge needs a paragraph starting **N — Title.** in that section (and vice versa).' % (in_py, in_md or 'none found'))
+
 for n, x, y in marks:
     hs = next(s for s in hotspots if s['n'] == n)
     hs['x'], hs['y'] = round(max(2.6, 100 * x / w), 2), round(100 * y / h, 2)   # keep a margin badge inside the frame
