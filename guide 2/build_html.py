@@ -7,15 +7,22 @@ Sections (H1) become tabs. In "Reading the page", each paragraph that starts "**
 panel shown when hotspot N is clicked; anything that follows it up to the next numbered paragraph (the tiles
 table, a figure) travels with it. Run: python3 build_html.py   (build.sh calls it)
 """
-import base64, html, json, os, re, subprocess
+import base64, html, json, os, re, shutil, subprocess, sys
 from annotate import CALLOUTS
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
 
+# Pandoc: whatever build.sh resolved (exported as PANDOC), else PATH, else the usual Windows install folders.
+PANDOC = os.environ.get('PANDOC') or shutil.which('pandoc') or next(
+    (c for c in [os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Pandoc', 'pandoc.exe'),
+                 r'C:\Program Files\Pandoc\pandoc.exe'] if os.path.isfile(c)), None)
+if not PANDOC or not (shutil.which(PANDOC) or os.path.isfile(PANDOC)):
+    sys.exit('pandoc not found%s. Install it or run: PANDOC=/path/to/pandoc.exe ./build.sh' % (' at ' + PANDOC if PANDOC else ''))
+
 # ---- 1. guide.md -> HTML sections ------------------------------------------------------------
-raw = subprocess.check_output(['pandoc', 'guide.md', '-t', 'html', '--section-divs'], text=True)
+raw = subprocess.check_output([PANDOC, 'guide.md', '-t', 'html', '--section-divs'], text=True)
 def front(key):   # YAML front matter, one line per key, quoted or not
     m = re.search(r'^%s:\s*"?(.*?)"?\s*$' % key, open('guide.md').read().split('---')[1], re.M)
     return m.group(1) if m else ''
