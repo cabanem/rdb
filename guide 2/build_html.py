@@ -22,9 +22,9 @@ if not PANDOC or not (shutil.which(PANDOC) or os.path.isfile(PANDOC)):
     sys.exit('pandoc not found%s. Install it or run: PANDOC=/path/to/pandoc.exe ./build.sh' % (' at ' + PANDOC if PANDOC else ''))
 
 # ---- 1. guide.md -> HTML sections ------------------------------------------------------------
-raw = subprocess.check_output([PANDOC, 'guide.md', '-t', 'html', '--section-divs'], text=True)
+raw = subprocess.check_output([PANDOC, 'guide.md', '-t', 'html', '--section-divs'], text=True, encoding='utf-8')
 def front(key):   # YAML front matter, one line per key, quoted or not
-    m = re.search(r'^%s:\s*"?(.*?)"?\s*$' % key, open('guide.md').read().split('---')[1], re.M)
+    m = re.search(r'^%s:\s*"?(.*?)"?\s*$' % key, open('guide.md', encoding='utf-8').read().split('---')[1], re.M)
     return m.group(1) if m else ''
 TITLE, SUBTITLE, DATE = front('title'), front('subtitle'), front('date')
 
@@ -264,6 +264,6 @@ page = '''<!DOCTYPE html>
 }
 
 os.makedirs('dist', exist_ok=True)
-with open('dist/guide.html', 'w') as f:
+with open('dist/guide.html', 'w', encoding='utf-8') as f:
     f.write(page)
 print('wrote dist/guide.html (%d KB, %d hotspots, %d tabs)' % (len(page) // 1024, len(hotspots), len(tabs) + 1))
