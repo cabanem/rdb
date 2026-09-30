@@ -109,15 +109,12 @@ function recipeOrderDiagnose() {
   var analyzer = WorkatoGraphLib.newAnalyzer(client, { STRICT: true });
   analyzer.primeCache(corpus.recipes);
 
-  var nameById = {};
-  corpus.recipes.forEach(function (r) { nameById[String(r.id)] = r.name || ''; });
   var manifest = corpus.recipes.map(function (r) { return { id: String(r.id), name: r.name }; });
   var graph = WorkatoOrderLib.newOrderer({ strict: false }).buildCorpusGraph(analyzer, manifest);
 
   var header = ['level', 'code', 'recipe', 'detail'];
   var rows = graph.findings.map(function (f) {
-    var m = /^(\d+)/.exec(String(f.detail || ''));            // findings lead with the caller's id
-    return [f.level, f.code, m ? (nameById[m[1]] || m[1]) : '', f.detail];
+    return [f.level, f.code, f.recipe_name || f.recipe_id || '', f.detail];   // OrderLib >= 0.3.0
   });
   var sh = roSheet_(ss, 'RecipeOrderFindings', header);
   if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, header.length).clearContent();
@@ -257,7 +254,7 @@ function roFetchCorpus_(client, rootFolderId) {
 function roCrossCheckManifest_(client, folderId, result) {
   try {
     var listing = client.get('export_manifests/folder_assets?folder_id=' + folderId);
-    var assets = Array.isArray(listing) ? listing : (listing.result || listing.assets || []);
+    var assets = roAssetsOf_(listing);
     var recipeAssets = assets.filter(function (a) { return String(a.type || '').toLowerCase() === 'recipe'; });
     if (!recipeAssets.length) return { status: 'skipped', detail: 'no recipe assets in listing' };
 
@@ -277,6 +274,16 @@ function roCrossCheckManifest_(client, folderId, result) {
   } catch (e) {
     return { status: 'skipped', detail: String(e && e.message || e) };
   }
+}
+
+/** The listing's assets array, wherever the envelope puts it ({result:{assets:[…]}}, {assets:[…]}, or bare). */
+function roAssetsOf_(listing) {
+  var v = listing;
+  for (var i = 0; i < 3 && v && typeof v === 'object' && !Array.isArray(v); i++) {
+    v = v.assets || v.result || v.data;
+  }
+  if (Array.isArray(v)) return v;
+  throw new Error('unexpected folder_assets shape: ' + JSON.stringify(listing).slice(0, 300));
 }
 
 // -------------------------------------------------------------------------------------------------------
