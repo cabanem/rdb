@@ -1,279 +1,314 @@
 # ============================================================================
-# Patch: ensure_custom_connector — install golden's custom connectors in a target
+# Patch: Projects-mode deployment — route through DEV, poll /deployments/:id
 # Against: Workato Developer API connector (dev_api.rb) as pasted 30 Sep 2026
 #
-# Two insertions:
-#   A. methods:  append after `fetch_api_endpoints` (add a comma after its `end`)
-#   B. actions:  append after `delete_api_client` (add a comma after its closing `}`)
-# No changes to connection, object_definitions, triggers or pick_lists.
+# What was wrong (per docs.workato.com/workato-api/projects and /api-clients):
+#   • Project build/deploy/deployment endpoints exist only in the DEV environment.
+#     start_deployment and deploy_package authenticated the deploy and the status
+#     poll to the TARGET environment, whose client cannot see them.
+#   • The status URL for a deployment is GET /deployments/:id. build_endpoint
+#     returned project_builds/:id/deploy for 'deploy_status' — that is the POST.
+#   • The deployment object carries detailed_state and an assets[] list; the
+#     result shape dropped both.
+#
+# Seven edits, all inside existing blocks. RLCM mode is untouched.
+#   A. methods.build_endpoint         — replace whole lambda
+#   B. methods                        — add deploy_environment_type after resolve_target_env
+#   C. methods.start_deployment       — replace the projects branch only
+#   D. methods.deployment_result      — replace whole lambda
+#   E. methods.poll_or_reinvoke       — one line in the 'failed' branch
+#   F. object_definitions             — deployment_obj fields, deploy_input_fields hints
+#   G. actions.deploy_package         — replace execute; help text on deploy_package,
+#                                       deploy_package_async, get_deployment
 # ============================================================================
 
 
 # ---------------------------------------------------------------------------
-# A. methods — append after fetch_api_endpoints
+# A. methods.build_endpoint — replace the whole lambda
 # ---------------------------------------------------------------------------
 
-    # ── Custom connectors ─────────────────────────────────────
-    # GET /custom_connectors/search?title= is a partial, case-sensitive match on the
-    # connector's *title*; the API's `name` is the provider key each workspace mints
-    # for itself, never the same in two workspaces. Search and code wrap in
-    # { data: ... }, create / update / release return the record bare —
-    # platform_result covers both. The whole resource is quota'd at 1 request/s.
+    # ── build_endpoint ────────────────────────────────────────
+    # Projects endpoints (build, project_builds, deployments) are DEV-only; callers
+    # pass the SOURCE data center for them. RLCM endpoints run on the target.
+    build_endpoint: lambda do |datacenter, id, is_projects_mode, action|
+      base = datacenter
 
-    # ── custom_connector_summary ──────────────────────────────
-    # `current`: the released version is the latest one — nothing left to release.
-    custom_connector_summary: lambda do |c|
-      latest   = c['latest_version']
-      released = c['latest_released_version']
-      {
-        'id'                      => c['id'],
-        'title'                   => c['title'],
-        'provider'                => c['name'],
-        'latest_version'          => latest,
-        'latest_released_version' => released,
-        'current'                 => released.present? && released.to_i == latest.to_i
-      }.compact
+      case action
+      when 'build'
+        if is_projects_mode.is_true?
+          "#{base}/projects/f#{id}/build"
+        else
+          "#{base}/packages/export/#{id}"
+        end
+      when 'status'
+        if is_projects_mode.is_true?
+          "#{base}/project_builds/#{id}"
+        else
+          "#{base}/packages/#{id}"
+        end
+      when 'deploy'
+        if is_projects_mode.is_true?
+          "#{base}/project_builds/#{id}/deploy"
+        else
+          "#{base}/packages/import/#{id}"
+        end
+      when 'deploy_status'
+        if is_projects_mode.is_true?
+          # A deployment is its own resource; project_builds/:id/deploy is the POST.
+          "#{base}/deployments/#{id}"
+        else
+          "#{base}/packages/#{id}"
+        end
+      when 'download'
+        "#{base}/packages/#{id}/download"
+      else
+        error("Unknown endpoint action: #{action}")
+      end
     end,
 
-    # ── find_custom_connector ─────────────────────────────────
-    # Exact-title match on the search result. nil when absent; error when the title
-    # is ambiguous — an installer must never pick one of two.
-    find_custom_connector: lambda do |dc, headers, title, env_name|
-      response = get("#{dc}/custom_connectors/search", { 'title' => title })
-                   .headers(headers)
-                   .after_error_response(/.*/) do |_c, b, _h, m|
-                     error("Search connector failed in #{env_name}: #{m} — #{b}")
-                   end
 
-      body    = call('resolve_response', response)
-      matches = Array(call('platform_result', body)).select { |c| c['title'] == title }
+# ---------------------------------------------------------------------------
+# B. methods — add after resolve_target_env
+# ---------------------------------------------------------------------------
 
-      if matches.length > 1
-        error("Connector '#{title}' is ambiguous in #{env_name}: " \
-              "#{matches.length} connectors carry that exact title.")
+    # ── deploy_environment_type ───────────────────────────────
+    # Projects mode: the environment_type the deploy payload takes. An explicit
+    # Env type wins; otherwise it is derived from the resolved target — prod when
+    # that environment is marked production, test otherwise. Only registered
+    # environments qualify: the deploy runs in DEV and names the target, it never
+    # authenticates to it, so a runtime override has nothing to attach to.
+    deploy_environment_type: lambda do |input, target_env|
+      if input['target_api_token'].present?
+        error('Projects mode deploys within one workspace from DEV, so a Target API token cannot be used. ' \
+              'Select a registered Target environment, or use RLCM mode for an external workspace.')
       end
 
-      matches.empty? ? nil : call('custom_connector_summary', matches.first)
+      if input['env_type'].present?
+        input['env_type']
+      elsif target_env['is_production'].is_true?
+        'prod'
+      else
+        'test'
+      end
     end,
-
-    # ── get_custom_connector_code ─────────────────────────────
-    get_custom_connector_code: lambda do |dc, headers, id, env_name|
-      response = get("#{dc}/custom_connectors/#{id}/code")
-                   .headers(headers)
-                   .after_error_response(/.*/) do |_c, b, _h, m|
-                     error("Get connector code failed in #{env_name}: #{m} — #{b}")
-                   end
-
-      body = call('platform_result', call('resolve_response', response)) || {}
-      code = body.is_a?(::Hash) ? body['code'] : nil
-      error("Connector #{id} returned no code from #{env_name}.") if code.blank?
-      code
-    end,
-
-    # ── write_custom_connector ────────────────────────────────
-    # POST to create (no id) or PUT to replace the code (id). Either way the target
-    # gets a new, unreleased version; the returned summary carries its number.
-    write_custom_connector: lambda do |args|
-      dc       = args['dc']
-      headers  = args['headers']
-      env_name = args['env_name']
-      payload  = { 'title' => args['title'], 'code' => args['code'], 'note' => args['note'] }.compact
-
-      response = if args['id'].blank?
-                   post("#{dc}/custom_connectors")
-                     .headers(headers)
-                     .payload(payload)
-                     .after_error_response(/.*/) do |_c, b, _h, m|
-                       error("Create connector failed in #{env_name}: #{m} — #{b}")
-                     end
-                 else
-                   put("#{dc}/custom_connectors/#{args['id']}")
-                     .headers(headers)
-                     .payload(payload)
-                     .after_error_response(/.*/) do |_c, b, _h, m|
-                       error("Update connector failed in #{env_name}: #{m} — #{b}")
-                     end
-                 end
-
-      body = call('platform_result', call('resolve_response', response)) || {}
-      call('custom_connector_summary', body)
-    end,
-
-    # ── release_custom_connector ──────────────────────────────
-    # Releases the latest version. The API answers 400 when that version is already
-    # released; that is the state the caller wants, so it is a no-op, not a failure.
-    # Returns true when this call released something.
-    release_custom_connector: lambda do |dc, headers, id, env_name|
-      already = false
-
-      response = post("#{dc}/custom_connectors/#{id}/release")
-                   .headers(headers)
-                   .after_error_response(/.*/) do |code, b, _h, m|
-                     if code.to_i == 400 && b.to_s =~ /already/i
-                       already = true
-                     else
-                       error("Release connector failed in #{env_name}: #{m} — #{b}")
-                     end
-                   end
-      call('resolve_response', response)
-
-      !already
-    end
 
 
 # ---------------------------------------------------------------------------
-# B. actions — append after delete_api_client
+# C. methods.start_deployment — replace the `if input['deployment_mode'] == 'projects'`
+#    branch (up to, not including, the `else`). The RLCM branch stays as it is.
 # ---------------------------------------------------------------------------
 
-    # Ensure custom connector
-    ensure_custom_connector: {
-      title: 'Ensure custom connector',
-      subtitle: 'Copy a connector from the source environment into a target and release it',
-      help: lambda do
-        { body: 'Reads the connector\'s current code from the source environment, creates or updates a connector ' \
-                'of the same title in the target, and releases it when the target\'s latest version is not yet ' \
-                'released. Idempotent: rerunning pushes whatever the source has now, and with Skip if current a ' \
-                'no-change rerun writes nothing and releases nothing. RLCM will not import a package whose custom ' \
-                'connectors are missing from the target, so run this for every custom_adapter in the manifest ' \
-                'before Deploy package. The target resolves as in Deploy package: a Target API token wins, then ' \
-                'Target environment, else the next environment by level. Four to seven requests per call against ' \
-                'a quota of one per second; a 429 reruns the action, which is safe because every step finds before ' \
-                'it writes (with Skip if current = No, a rerun after a successful update cuts one extra, identical ' \
-                'version). Enable data masking on the step when passing a Target API token.' }
-      end,
+      if input['deployment_mode'] == 'projects'
+        # Project deployments are DEV-only endpoints: authenticate to the source
+        # environment and name the target with environment_type.
+        headers = call('get_auth_headers', connection, input['source_environment'])
+        dc      = call('get_datacenter', connection, input['source_environment'])
+        url     = call('build_endpoint', dc, input['id'], true, 'deploy')
 
-      input_fields: lambda do |object_definitions|
-        [
-          { name: 'source_environment', control_type: 'select', pick_list: 'environments', toggle_hint: 'Use datapill',
-            optional: false, hint: 'The environment the connector code is read from (e.g. DEV).' },
-          { name: 'title', label: 'Connector title', optional: false,
-            hint: 'The connector\'s title as shown under Tools > Connector SDK — matched exactly in both environments. ' \
-                  'Not the provider key, which every workspace mints for itself.' },
-          { name: 'target_environment', control_type: 'select', pick_list: 'target_environments',
-            pick_list_params: { source_environment: 'source_environment' }, toggle_hint: 'Use datapill', optional: true,
-            hint: 'Optional. A registered environment to install into. If blank, the next environment by level — ' \
-                  'unless a Target API token is supplied below.' },
-          { name: 'target_data_center', label: 'Target data center', control_type: 'select', pick_list: 'data_centers',
-            toggle_hint: 'Use datapill', optional: true,
-            hint: 'Runtime target: the data center of a workspace not registered on this connection. Requires Target API token.' },
-          { name: 'target_api_token', label: 'Target API token', control_type: 'text', optional: true,
-            hint: 'Runtime target: API token for that workspace. Overrides Target environment. Passes through the job as a ' \
-                  'step input — enable data masking on the step.' },
-          { name: 'target_label', label: 'Target label', optional: true,
-            hint: 'Runtime target: name stamped on outputs. Defaults to "override".' },
-          { name: 'note', label: 'Version note', optional: true,
-            hint: 'Optional note stamped on the version this call creates in the target, e.g. the prepare job\'s ' \
-                  'correlation ID. Visible in the target\'s connector version history.' },
-          { name: 'release', type: :boolean, control_type: 'checkbox', default: 'true', optional: true,
-            hint: 'No: create or update without releasing (staging a change). Defaults to Yes.' },
-          { name: 'skip_if_current', label: 'Skip if current', type: :boolean, control_type: 'checkbox', default: 'true',
-            optional: true,
-            hint: 'Yes: fetch the target\'s code and skip the write when it already equals the source\'s, so a ' \
-                  'no-change redeploy does not cut a new version. Costs one extra request. Defaults to Yes.' }
-        ]
-      end,
+        post(url)
+          .headers(headers)
+          .payload({
+            'environment_type' => call('deploy_environment_type', input, target_env),
+            'description'      => input['description'],
+            'include_tags'     => (input['include_tags'].is_true? ? true : nil)
+          }.compact)
+          .after_error_response(/.*/) do |_c, b, _h, m|
+            error("Deploy failed: #{m} — #{b}")
+          end
+      else
 
-      execute: lambda do |connection, input|
-        src = call('resolve_environment', connection, input['source_environment'])
-        tgt = call('resolve_target_env', connection, input)
 
-        if input['target_api_token'].blank? && tgt['name'] == src['name']
-          error("Source and target are both #{src['name']}; pick a different target.")
+# ---------------------------------------------------------------------------
+# D. methods.deployment_result — replace the whole lambda
+# ---------------------------------------------------------------------------
+
+    # ── deployment_result ─────────────────────────────────────
+    # Shape a package / deployment response into deployment_obj.
+    #   RLCM     → recipe_status[] (one import_result per recipe) plus per-recipe
+    #              and aggregate ok flags, so a recipe can branch on "completed,
+    #              but N recipes are stopped" instead of seeing plain success.
+    #   Projects → detailed_state and the assets[] list (target-side id, name,
+    #              type, state, folder) with new/updated counts.
+    deployment_result: lambda do |response, status, is_projects|
+      result = {
+        'id'           => response['id'],
+        'status'       => status,
+        'raw_status'   => is_projects.is_true? ? response['state'] : response['status'],
+        'error'        => response['error'],
+        'download_url' => response['download_url']
+      }
+
+      if is_projects.is_true?
+        assets = Array(response['assets']).map do |a|
+          { 'id' => a['id'], 'name' => a['name'], 'type' => a['type'],
+            'state' => a['state'], 'folder' => a['folder'] }.compact
         end
 
-        src_headers = call('get_auth_headers', connection, src)
-        src_dc      = call('get_datacenter', connection, src)
-        tgt_headers = call('get_auth_headers', connection, tgt)
-        tgt_dc      = call('get_datacenter', connection, tgt)
+        result['detailed_state']   = response['detailed_state']
+        result['environment_type'] = response['environment_type']
+        result['project_build_id'] = response['project_build_id']
 
-        title = input['title'].to_s.strip
-        error('Connector title is required.') if title.blank?
+        unless status == 'in_progress'
+          result['asset_count']    = assets.length
+          result['assets_new']     = assets.count { |a| a['state'] == 'new' }
+          result['assets_updated'] = assets.count { |a| a['state'] == 'updated' }
+          result['assets']         = assets
+        end
+      else
+        ok_values = call('ok_import_results')
 
-        # nil = a step configured before the field existed; both default to Yes.
-        release = input['release'].nil?         || input['release'].is_true?
-        skip    = input['skip_if_current'].nil? || input['skip_if_current'].is_true?
+        recipe_status = Array(response['recipe_status']).map do |r|
+          {
+            'id'            => r['id'],
+            'import_result' => r['import_result'],
+            'ok'            => ok_values.include?(r['import_result'])
+          }
+        end
 
-        # ── Source: find, then read ───────────────────────
-        source = call('find_custom_connector', src_dc, src_headers, title, src['name'])
-        error("Connector '#{title}' not found in #{src['name']}.") if source.nil?
-        code = call('get_custom_connector_code', src_dc, src_headers, source['id'], src['name'])
+        unless status == 'in_progress'
+          result['recipe_count']     = recipe_status.length
+          result['recipes_ok_count'] = recipe_status.count { |r| r['ok'] }
+          result['all_recipes_ok']   = recipe_status.all? { |r| r['ok'] }
+          result['recipe_status']    = recipe_status
+        end
+      end
 
-        # ── Target: find, then create or update ───────────
-        target  = call('find_custom_connector', tgt_dc, tgt_headers, title, tgt['name'])
-        created = false
-        updated = false
+      result.compact
+    end,
 
-        write_args = {
-          'dc'       => tgt_dc,
-          'headers'  => tgt_headers,
-          'env_name' => tgt['name'],
-          'title'    => title,
-          'code'     => code,
-          'note'     => input['note']
+
+# ---------------------------------------------------------------------------
+# E. methods.poll_or_reinvoke — in the `when 'failed'` branch, replace
+#      msg = response['error'] || 'Operation failed.'
+#    with:
+# ---------------------------------------------------------------------------
+
+        msg = response['error'] || response['detailed_state'] || 'Operation failed.'
+
+
+# ---------------------------------------------------------------------------
+# F. object_definitions
+# ---------------------------------------------------------------------------
+
+# F1. deployment_obj — append these after the recipe_status field:
+
+          { name: 'detailed_state',
+            hint: 'Projects only. Workato\'s finer state, e.g. deploy_finished, pending_review.' },
+          { name: 'environment_type', hint: 'Projects only. The environment deployed to.' },
+          { name: 'project_build_id', type: :integer, hint: 'Projects only.' },
+          { name: 'asset_count', type: :integer, hint: 'Projects only. Assets in the deployment.' },
+          { name: 'assets_new', type: :integer, hint: 'Projects only. Assets created in the target.' },
+          { name: 'assets_updated', type: :integer, hint: 'Projects only. Assets that already existed and were overwritten.' },
+          { name: 'assets', type: :array, of: :object,
+            hint: 'Projects only. One entry per asset. id is the target-side ID; null for a new asset until it is created.',
+            properties: [
+              { name: 'id', type: :integer },
+              { name: 'name' },
+              { name: 'type' },
+              { name: 'state', hint: 'new | updated | deleted' },
+              { name: 'folder' }
+            ] }
+
+# F2. deploy_input_fields — replace these four field definitions in place
+#     (source_environment, target_api_token, include_tags, env_type):
+
+          { name: 'source_environment', control_type: 'select', pick_list: 'environments', toggle_hint: 'Use datapill',
+            optional: false,
+            hint: 'The environment the package was built in. In Projects mode every call (deploy and status) ' \
+                  'authenticates here — deployment endpoints exist only in DEV.' },
+
+          { name: 'target_api_token', label: 'Target API token', control_type: 'text', optional: true,
+            hint: 'RLCM only. Runtime target: API token for a workspace not registered on this connection. Overrides ' \
+                  'Target environment. Passes through the job as a step input — enable data masking on the step. ' \
+                  'Rejected in Projects mode, which deploys within one workspace.' },
+
+          { name: 'include_tags', type: :boolean, control_type: 'checkbox', default: 'false', optional: true,
+            hint: 'Preserve tags on deployed assets. RLCM: only has effect if the manifest was created with Include tags. ' \
+                  'Projects: tags are applied in the target environment when Yes.' },
+
+          { name: 'env_type', control_type: 'select', pick_list: 'target_environment_types', optional: true,
+            ngIf: 'input.deployment_mode == "projects"',
+            hint: 'Projects only. Leave blank to derive from the target: prod when it is marked production, else test.' },
+
+
+# ---------------------------------------------------------------------------
+# G. actions
+# ---------------------------------------------------------------------------
+
+# G1. actions.deploy_package.help — replace body:
+
+        { body:
+          'Deploys a built package from one environment to another. This is a long action; the recipe job ' \
+          'pauses and resumes automatically while waiting for completion. Projects mode deploys a build to a ' \
+          'registered environment of the same workspace: the deploy and every status poll run through the source ' \
+          '(DEV) environment, because deployment endpoints exist only there, and the target is named by ' \
+          'environment_type. RLCM mode downloads the package binary from the source and uploads it to the target ' \
+          'folder, which may be a workspace resolved at runtime. Check the mode-specific gates: all_recipes_ok in ' \
+          'RLCM (a completed import can leave recipes stopped); detailed_state in Projects (a workspace with ' \
+          'review-and-approval on holds a deployment at pending_review, which this action reports as a timeout).'
         }
 
-        if target.nil?
-          target  = call('write_custom_connector', write_args)
-          created = true
-        else
-          same = skip &&
-                 call('get_custom_connector_code', tgt_dc, tgt_headers, target['id'], tgt['name']) == code
-          unless same
-            target  = call('write_custom_connector', write_args.merge('id' => target['id']))
-            updated = true
+# G2. actions.deploy_package.execute — replace the whole lambda:
+
+      execute: lambda do |connection, input, _eis, _eos, continue|
+        continue    = continue || {}
+        is_projects = input['deployment_mode'] == 'projects'
+        target_env  = call('resolve_target_env', connection, input)
+
+        # Projects: build, deploy and deployment status are DEV-only, so the poll
+        # goes to the source. RLCM: the import is polled on the target.
+        status_env  = is_projects ? input['source_environment'] : target_env
+
+        response =
+          if continue['job_id'].blank?
+            # ── First invocation: start deployment ────────────
+            call('start_deployment', connection, input, target_env)
+          else
+            # ── Reinvocation: check deployment status ─────────
+            headers = call('get_auth_headers', connection, status_env)
+            dc      = call('get_datacenter', connection, status_env)
+
+            get(call('build_endpoint', dc, continue['job_id'], is_projects, 'deploy_status'))
+              .headers(headers)
+              .after_error_response(/.*/) do |_c, b, _h, m|
+                error("Deployment status check failed: #{m} — #{b}")
+              end
           end
+
+        status = call('normalize_status', response, is_projects)
+
+        if status == 'success'
+          call('deployment_result', response, status, is_projects)
+        else
+          # in_progress → reinvoke later; failed → error with detail
+          call('poll_or_reinvoke', {
+            'status'   => status,
+            'response' => response,
+            'continue' => continue
+          })
         end
-
-        # ── Release only when something is unreleased ─────
-        # The API answers 400 otherwise; `current` from the search or write result
-        # already says whether there is anything to release.
-        released = false
-        if release && !target['current']
-          released = call('release_custom_connector', tgt_dc, tgt_headers, target['id'], tgt['name'])
-        end
-
-        # ── Read back: the output is what the API reports, not what was sent ──
-        final = call('find_custom_connector', tgt_dc, tgt_headers, title, tgt['name'])
-        error("Connector '#{title}' is not in #{tgt['name']} after the write.") if final.nil?
-
-        if release && !final['current']
-          error("Connector '#{title}' in #{tgt['name']} is at version #{final['latest_version']} but the released " \
-                "version is #{final['latest_released_version'] || 'none'}; recipes cannot use it until it is released.")
-        end
-
-        {
-          'workato_environment' => tgt['name'],
-          'title'               => final['title'],
-          'id'                  => final['id'],
-          'provider'            => final['provider'],
-          'created'             => created,
-          'updated'             => updated,
-          'released'            => released,
-          'released_version'    => final['latest_released_version'],
-          'latest_version'      => final['latest_version'],
-          'current'             => final['current']
-        }.compact
       end,
 
-      output_fields: lambda do |_object_definitions|
-        [
-          { name: 'workato_environment' },
-          { name: 'title' },
-          { name: 'id', type: :integer, hint: 'Connector ID in the target.' },
-          { name: 'provider',
-            hint: 'The target\'s provider key (the API\'s name field). Differs per workspace; never reference it literally.' },
-          { name: 'created', type: :boolean, hint: 'This call created the connector.' },
-          { name: 'updated', type: :boolean, hint: 'This call replaced its code.' },
-          { name: 'released', type: :boolean, hint: 'This call released a version.' },
-          { name: 'released_version', type: :integer,
-            hint: 'Version now released in the target, as the API reports it after the write.' },
-          { name: 'latest_version', type: :integer },
-          { name: 'current', type: :boolean,
-            hint: 'True when the released version is the latest one — the readiness gate for recipes.' }
-        ]
-      end,
+# G3. actions.deploy_package_async.help — replace body:
 
-      retry_on_response: [429],
-      retry_on_request: %w[GET PUT POST DELETE],
-      max_retries: 3
-    }
+        { body: 'Starts a deployment without waiting for it to finish. Returns the deployment ID and initial status. ' \
+                'Projects mode starts it through the source (DEV) environment; follow with Get deployment status ' \
+                'against the same source environment. RLCM mode starts the import on the target. Useful when ' \
+                'deploying to several environments in parallel.' }
+
+# G4. actions.get_deployment — replace the help body and the deployment_mode field hint:
+
+        { body: 'Returns the current status of a deployment. Status is normalized across both modes: in_progress, ' \
+                'success, or failed. Projects: select the environment the deployment was started from (DEV) — ' \
+                'deployment endpoints exist only there — and read detailed_state and assets. RLCM: select the ' \
+                'target; a finished import returns recipe_status and all_recipes_ok.' }
+
+          {
+            name: 'deployment_mode',
+            control_type: 'select',
+            pick_list: 'deployment_mode',
+            toggle_hint: 'Use datapill',
+            optional: false,
+            hint: 'Must match the mode used for the deployment. Projects: the environment above must be the one ' \
+                  'the deployment was started from, not the one deployed to.'
+          },
