@@ -100,24 +100,26 @@ page = '''<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>%(title)s</title>
 <style>
+  /* Palette: the dashboard's own tokens (Dashboard.html :root), so the two read as one product. The dashboard
+     is light-only, so the guide is too; an explicit data-theme="dark" on <html> is the one switch kept for later. */
   :root {
     box-sizing: border-box;
+    color-scheme: light;
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
-    --bg: #f6f5f2; --surface: #fff; --ink: #1b1f26; --ink-2: #3b4250; --muted: #6b7280; --line: #e3e4e8;
-    --accent: #1c5cab; --accent-ink: #fff; --hot: #d03b3b; --hot-active: #1c5cab; --code: #eef0f3;
+    --bg: #F7F5F0; --surface: #fff; --ink: #0F1941; --ink-2: rgba(15, 25, 65, 0.78); --muted: rgba(15, 25, 65, 0.5);
+    --line: rgba(15, 25, 65, 0.1); --accent: #2175D9; --accent-ink: #fff; --hot: #d03b3b; --hot-active: #2175D9;
+    --code: rgba(15, 25, 65, 0.06); --shadow: 0 1px 2px rgba(15, 25, 65, 0.06), 0 10px 28px rgba(15, 25, 65, 0.10);
   }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-    --bg: #15171c; --surface: #1f2229; --ink: #e8eaee; --ink-2: #c5c9d1; --muted: #8b919c; --line: #30343c;
-    --accent: #7fb0ec; --accent-ink: #0f1a2a; --hot: #e0605f; --hot-active: #7fb0ec; --code: #2a2e36;
-  } }
   :root[data-theme="dark"] {
+    color-scheme: dark;
     --bg: #15171c; --surface: #1f2229; --ink: #e8eaee; --ink-2: #c5c9d1; --muted: #8b919c; --line: #30343c;
     --accent: #7fb0ec; --accent-ink: #0f1a2a; --hot: #e0605f; --hot-active: #7fb0ec; --code: #2a2e36;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.45);
   }
   html { scroll-padding-top: env(safe-area-inset-top, 0px); }
   * { box-sizing: inherit; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 48px; }
   header h1 { margin: 0; font-size: 26px; }
   header p { margin: 4px 0 0; color: var(--muted); }
@@ -128,14 +130,15 @@ page = '''<!DOCTYPE html>
 
   /* explore */
   .explore { display: grid; grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr); gap: 20px; align-items: start; }
-  .shot { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-  .shot img { display: block; width: 100%%; height: auto; }
+  .shot { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px; box-shadow: var(--shadow); }
+  .shot-in { position: relative; }   /* hotspots are placed against the image, not the mat */
+  .shot img { display: block; width: 100%%; height: auto; border-radius: 6px; }
   .hot { position: absolute; transform: translate(-50%%, -50%%); width: 30px; height: 30px; border-radius: 50%%; border: 2px solid #fff;
          background: var(--hot); color: #fff; font: 700 15px/1 system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.25); padding: 0;
          transition: transform .12s; }
   .hot:hover { transform: translate(-50%%, -50%%) scale(1.15); }
   .hot[aria-pressed="true"] { background: var(--hot-active); transform: translate(-50%%, -50%%) scale(1.2); }
-  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; position: sticky; top: calc(12px + env(safe-area-inset-top, 0px)); }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; box-shadow: var(--shadow); position: sticky; top: calc(12px + env(safe-area-inset-top, 0px)); }
   .panel .hint { color: var(--muted); font-size: 14px; }
   .panel .steps { display: flex; justify-content: space-between; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
   .panel .steps button { border: 1px solid var(--line); background: transparent; color: var(--ink-2); border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 14px; cursor: pointer; }
@@ -145,11 +148,11 @@ page = '''<!DOCTYPE html>
   .hs p:first-of-type { margin-top: 0; }
 
   /* prose panes */
-  .pane { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px 26px; max-width: 860px; }
+  .pane { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px 26px; max-width: 860px; box-shadow: var(--shadow); }
   .pane h2 { margin: 0 0 12px; font-size: 22px; }
   .pane p, .hs p { margin: 0 0 12px; }
   .pane figure, .hs figure { margin: 16px 0; }
-  .pane img, .hs img { max-width: 100%%; height: auto; border: 1px solid var(--line); border-radius: 8px; cursor: zoom-in; display: block; }
+  .pane img, .hs img { max-width: 100%%; height: auto; padding: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); cursor: zoom-in; display: block; }
   .pane img.w55 { max-width: 55%%; } .pane img.w75 { max-width: 75%%; }
   @media (max-width: 700px) { .pane img.w55, .pane img.w75 { max-width: 100%%; } }
   figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
@@ -181,10 +184,10 @@ page = '''<!DOCTYPE html>
   <section class="pane-explore" id="pane-explore">
     %(overview_body)s
     <div class="explore">
-      <div class="shot">
+      <div class="shot"><div class="shot-in">
         <img src="%(overview_img)s" alt="The Contract Intake dashboard">
         %(hots)s
-      </div>
+      </div></div>
       <aside class="panel" aria-live="polite">
         <div id="panelIntro">
           <p class="hint">Click a number on the screenshot, or press &rarr; to walk through the page in order.</p>
