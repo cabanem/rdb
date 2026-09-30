@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the user guide from guide.md + img/. Run from this folder.
-#   ./build.sh   -> dist/guide.docx (upload to Google Docs, or open in Word), dist/guide.pdf,
+#   ./build.sh                               -> dist/guide.docx (upload to Google Docs, or open in Word), dist/guide.pdf,
 #                   and dist/guide.html (the interactive version — one self-contained file)
+#   PANDOC=/c/some/where/pandoc.exe ./build.sh   if pandoc is not on PATH (SOFFICE=... likewise)
 # Re-snip a screenshot? Replace the PNG in img/ (same name), adjust annotate.py if it has callouts, re-run.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -18,16 +19,32 @@ else echo "No Python found. Install it or create the venv (see step 3)." >&2; ex
 fi
 $PY -c "import PIL" 2>/dev/null || { echo "Pillow is missing: $PY -m pip install -r requirements.txt" >&2; exit 1; }
 
+# Find pandoc. Override with PANDOC=/path/to/pandoc.exe ./build.sh; otherwise PATH, then the usual Windows spots.
+if [ -z "${PANDOC:-}" ]; then
+  for c in pandoc "${LOCALAPPDATA:-}/Pandoc/pandoc.exe" "/c/Program Files/Pandoc/pandoc.exe" "$HOME/AppData/Local/Pandoc/pandoc.exe"; do
+    if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then PANDOC="$c"; break; fi
+  done
+fi
+{ [ -n "${PANDOC:-}" ] && command -v "$PANDOC" >/dev/null 2>&1; } || \
+  { echo "pandoc not found${PANDOC:+ at $PANDOC}. Install it, or run: PANDOC=/path/to/pandoc.exe ./build.sh" >&2; exit 1; }
+
+# Find LibreOffice the same way (only needed for the PDF when there is no TeX). SOFFICE=/path overrides.
+if [ -z "${SOFFICE:-}" ]; then
+  for c in soffice "/c/Program Files/LibreOffice/program/soffice.exe" "/Applications/LibreOffice.app/Contents/MacOS/soffice"; do
+    if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then SOFFICE="$c"; break; fi
+  done
+fi
+
 $PY annotate.py
-pandoc guide.md -o dist/guide.docx --resource-path=. --toc --toc-depth=1
+"$PANDOC" guide.md -o dist/guide.docx --resource-path=. --toc --toc-depth=1
 $PY build_html.py
 
 # PDF: Pandoc + XeLaTeX when a full TeX is installed; otherwise LibreOffice converts the .docx.
-if pandoc guide.md -o dist/guide.pdf --resource-path=. --toc --toc-depth=1 \
+if "$PANDOC" guide.md -o dist/guide.pdf --resource-path=. --toc --toc-depth=1 \
      --pdf-engine=xelatex -V geometry:margin=1in -V mainfont="DejaVu Sans" -V fontsize=11pt -V colorlinks=true 2>/dev/null; then
   echo "pdf via xelatex"
-elif command -v soffice >/dev/null; then
-  soffice --headless --convert-to pdf --outdir dist dist/guide.docx >/dev/null
+elif [ -n "${SOFFICE:-}" ]; then
+  "$SOFFICE" --headless --convert-to pdf --outdir dist dist/guide.docx >/dev/null
   echo "pdf via LibreOffice"
 else
   echo "no PDF engine found; open dist/guide.docx in Google Docs and use File > Download > PDF"
