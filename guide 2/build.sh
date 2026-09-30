@@ -6,9 +6,21 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p dist
-python3 annotate.py
+
+# Find a Python. Prefer the venv here (Linux/mac layout, then Windows layout); otherwise whatever the
+# machine calls it — Windows installs `python` or the `py` launcher, not `python3`.
+if   [ -x .venv/bin/python ];        then PY=.venv/bin/python
+elif [ -x .venv/Scripts/python.exe ]; then PY=.venv/Scripts/python.exe
+elif command -v python3 >/dev/null;  then PY=python3
+elif command -v python  >/dev/null;  then PY=python
+elif command -v py      >/dev/null;  then PY="py -3"
+else echo "No Python found. Install it or create the venv (see step 3)." >&2; exit 1
+fi
+$PY -c "import PIL" 2>/dev/null || { echo "Pillow is missing: $PY -m pip install -r requirements.txt" >&2; exit 1; }
+
+$PY annotate.py
 pandoc guide.md -o dist/guide.docx --resource-path=. --toc --toc-depth=1
-python3 build_html.py
+$PY build_html.py
 
 # PDF: Pandoc + XeLaTeX when a full TeX is installed; otherwise LibreOffice converts the .docx.
 if pandoc guide.md -o dist/guide.pdf --resource-path=. --toc --toc-depth=1 \
