@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <base target="_top">
+  <title>Choose from Drive</title>
+  <!--
+    Picker.html — the picker helper page, served by this project's own doGet() and EXECUTED AS THE VISITOR.
+
+    Frame chain when embedded by a host dashboard. Every HtmlService page is TWO frames deep — the /exec document
+    on script.google.com holds a sandbox frame, which holds the user's HTML — so the chain is:
+        host /exec document           script.google.com
+          └─ host sandbox frame        host's googleusercontent origin
+               └─ host user frame       host's googleusercontent origin   <- the dashboard's JS; receives our messages
+                    └─ <iframe src="…/exec?o=…&n=…">   script.google.com  (the helper's own /exec document)
+                         └─ helper sandbox frame       OUR googleusercontent origin
+                              └─ this page             OUR googleusercontent origin   <- window
+    We do not count frames to find the host. Every message is posted to EVERY ancestor with targetOrigin set to
+    the allow-listed host origin (?o=), and the browser delivers it only to a window whose origin matches — the
+    others drop it silently. That is the same guarantee as targeting one window, minus the assumption about how
+    deep Google nests its sandbox (v2.1 assumed one level and posted to the wrong window). Cross-origin access
+    to `parent` and `postMessage` is permitted; nothing else is read from those windows.
+
+    Messages posted to the host (targetOrigin = the allow-listed host origin from ?o=):
+      { type: 'drivepicker:ready',  nonce }                  page loaded and authorised
+      { type: 'drivepicker:picked', nonce, files, token }    files: [{id, name, mimeType, sizeBytes, url}]
+      { type: 'drivepicker:cancel', nonce }
+      { type: 'drivepicker:error',  nonce, message }
+    Standalone (opened in its own tab for the one-time authorisation) it just confirms and asks to go back.
+  -->
+  <style>
+    html, body { margin: 0; height: 100%; background: #fff; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1a1a1a; }
+    .msg { padding: 24px; max-width: 560px; }
+    .msg h1 { font-size: 17px; margin: 0 0 8px; }
+    .muted { color: #5f6b7a; }
+    .err { color: #b3261e; }
+    code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <div class="msg" id="msg"><span class="muted">Opening Drive…</span></div>
+
+  <script>
+    var CFG = <?!= cfgJson ?>;
+
+    (function () {
+      'use strict';
+      var msgEl = document.getElementById('msg');
+
+      function show(html) { msgEl.innerHTML = html; }
+      function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+      // Embedded = a host passed its origin and did not ask for the standalone page. The server already set
+      // `standalone` for a visit with no ?o=, so this is the only signal needed; no frame counting.
+      var embedded = !!CFG.target && !CFG.standalone;
+
+      // Every window above this one, nearest first. `parent` is readable on a cross-origin window; nothing else is.
+      function ancestors() {
+        var out = [];
+        var w = window;
+        try { while (w.parent && w.parent !== w && out.length < 8) { w = w.parent; out.push(w); } } catch (e) { /* stop at the first window that refuses */ }
+        return out;
+      }
+      var chain = ancestors();
+
+      function post(data) {
+        if (!embedded) return false;
+        data.nonce = CFG.nonce;
+        var sent = false;
+        chain.forEach(function (w) {
+          try { w.postMessage(data, CFG.target); sent = true; } catch (e) { /* not this one */ }
+        });
+        return sent;
+      }
+
+      if (CFG.error) {
+        show('<h1>Drive picker</h1><p class="err">' + esc(CFG.error) + '</p>');
+        post({ type: 'drivepicker:error', message: CFG.error });
+        return;
+      }
+
+      if (!embedded || CFG.standalone) {
+        // Reached directly (usually via the host's "sign in once" link). Being here means authorisation is done.
+        show('<h1>You’re set.</h1><p>Drive access for the picker is authorised. Close this tab and click <b>Add from Drive</b> again.</p>');
+        return;
+      }
+
+      post({ type: 'drivepicker:ready' });
+
+      // --- Google Picker -------------------------------------------------------------------------
+      function loadScript(src, cb, err) {
+        var s = document.createElement('script');
+        s.src = src; s.async = true; s.onload = cb; s.onerror = err;
+        document.head.appendChild(s);
+      }
+
+      function toFiles(data) {
+        var docs = data[google.picker.Response.DOCUMENTS] || [];
+        return docs.map(function (d) {
+          return {
+            id: d[google.picker.Document.ID],
+            name: d[google.picker.Document.NAME],
+            mimeType: d[google.picker.Document.MIME_TYPE],
+            sizeBytes: d.sizeBytes != null ? Number(d.sizeBytes) : null,
+            url: d[google.picker.Document.URL] || null
+          };
+        });
+      }
+
+      function openPicker() {
+        // Three tabs, in the order people expect. setEnableDrives(true) turns a DocsView INTO the shared-drives
+        // browser (v2.1 had only that view, so the Picker opened on shared drives). My Drive comes first.
+        var mine = new google.picker.DocsView(google.picker.ViewId.DOCS)
+          .setIncludeFolders(true).setSelectFolderEnabled(false).setOwnedByMe(true).setLabel('My Drive');
+        var shared = new google.picker.DocsView(google.picker.ViewId.DOCS)
+          .setIncludeFolders(true).setSelectFolderEnabled(false).setOwnedByMe(false).setLabel('Shared with me');
+        var drives = new google.picker.DocsView(google.picker.ViewId.DOCS)
+          .setIncludeFolders(true).setSelectFolderEnabled(false).setEnableDrives(true).setLabel('Shared drives');
+        var views = [mine, shared, drives];
+        if (CFG.mimeTypes) views.forEach(function (v) { v.setMimeTypes(CFG.mimeTypes); });
+
+        // google.script.host.origin is the top window's origin (script.google.com); the Picker needs it to post
+        // its own results back into this frame.
+        new google.picker.PickerBuilder()
+          .setOAuthToken(CFG.token)
+          .setDeveloperKey(CFG.apiKey)
+          .setAppId(String(CFG.appId))
+          .setOrigin(google.script.host.origin)
+          .addView(mine).addView(shared).addView(drives)
+          .enableFeature(google.picker.Feature.SUPPORT_DRIVES)
+          .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+          .setCallback(function (data) {
+            var action = data[google.picker.Response.ACTION];
+            if (action === google.picker.Action.PICKED) {
+              show('<span class="muted">Sending your choice back…</span>');
+              post({ type: 'drivepicker:picked', files: toFiles(data), token: CFG.token });
+            } else if (action === google.picker.Action.CANCEL) {
+              post({ type: 'drivepicker:cancel' });
+            }
+          })
+          .build()
+          .setVisible(true);
+      }
+
+      loadScript('https://apis.google.com/js/api.js', function () {
+        gapi.load('picker', {
+          callback: function () {
+            try { openPicker(); }
+            catch (e) { show('<p class="err">' + esc(e.message) + '</p>'); post({ type: 'drivepicker:error', message: e.message }); }
+          },
+          onerror: function () { post({ type: 'drivepicker:error', message: 'Could not load the Picker module.' }); }
+        });
+      }, function () {
+        show('<p class="err">Could not load Google’s Picker script.</p>');
+        post({ type: 'drivepicker:error', message: 'Could not load https://apis.google.com/js/api.js' });
+      });
+    })();
+  </script>
+</body>
+</html>
