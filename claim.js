@@ -1,103 +1,160 @@
 /**
- * @file Claim.gs — take custody of an original after its review sheet exists, whether or not the runner owns it.
+ * @file Access.gs — makes folder access a checked precondition instead of a 5-minutes-later surprise.
  *
  * WHY
- *   Intake files arrive three ways. Dashboard uploads and picker imports are created BY the runner (stageBlob_), so
- *   the runner owns them and moveTo just works. A file dropped straight into the Intake folder is owned by whoever
- *   dropped it, and moving someone else's file is the one Drive operation that depends on their settings — it is what
- *   threw "Access denied: DriveApp". So: try the move; if Drive refuses, COPY the file into the destination (the copy
- *   is runner-owned and permanent) and stamp the original with an appProperty so the next poll skips it. The review
- *   sheet is re-pointed at the copy, because the dropper can delete the original at any time and the copy is what the
- *   reviewer and Workato need.
+ *   The pipeline runs as ONE identity: whoever created the triggers (and deployed the web app). Every Drive call in
+ *   the two loops — list Intake, move originals, create and move review sheets — is that identity's permission on
+ *   that folder. DriveApp hides "does not exist" and "exists but you can't see it" behind one message ("No item
+ *   with the given ID could be found, or you do not have permission..."), and a folder that opens fine can still
+ *   refuse a create or a move. So: ask Drive what this identity CAN do on each configured folder, up front, and
+ *   name the folder and the capability that is missing.
  *
- * ORDERING (unchanged): extract -> review sheet -> claim. The claim is last so a crash never leaves a file in
- * Processed with no review sheet. The only duplicate window is still "sheet created, claim not finished".
+ * INVARIANT (reported, not enforced, so an existing My Drive setup keeps running while you migrate)
+ *   Every configured folder lives in a shared drive. In My Drive each item has a human owner and non-owner move
+ *   semantics depend on that owner; in a shared drive the organisation owns the items and the capability model is
+ *   clean. "Content manager" on the shared drive is exactly the permission the loops need.
  *
- * WIRING in processIngestion():
- *   while (files.hasNext()) {
- *     const file = files.next();
- *     if (isClaimed_(file)) continue;                       // a prior poll copied it; the original is still here
- *     ...
- *     const sheet = extractOneFile_(file, cfg, pending);
- *     const kept = claimOriginal_(file, processed);         // was: moveFile_(file, processed)
- *     if (kept.getId() !== file.getId()) repointSheet_(sheet.id, kept);
- *     ...
- *   } catch (err) {
- *     ...
- *     try { claimOriginal_(file, failed); } catch (e) { /* leave in Intake to retry */ }   // was: moveFile_(file, failed)
- *   }
- * Also skip claimed files in countIntakeFiles_() (Intake.gs) so the dashboard's "waiting" count stays honest.
+ * USES
+ *   checkAccess() / checkAccessUi()  Manual or from the "Contract Intake" menu: one line per folder.
+ *   assertFolderAccess_(cfg, keys)   Top of both loops: a bad config becomes one clear ERROR row in _logs.
+ *   createInPlace_()                 Create a file directly inside a folder (shared-drive safe); no My Drive hop.
  *
- * Requires the Advanced Drive Service (v3), already enabled.
+ * Requires the Advanced Drive Service (v3), which appsscript.json already enables.
  */
 
-/** @const {string} appProperties key stamped on an original the pipeline has copied rather than moved. */
-const CLAIM_KEY = 'g2s_claimed';
+/** @const {string[]} Config keys that name pipeline folders. */
+const FOLDER_KEYS = [
+  'folder_id_ingestion', 'folder_id_processed', 'folder_id_failed',
+  'folder_id_pending', 'folder_id_pushed', 'folder_id_cancelled'
+];
+
+/** @const {Object.<string,string>} Capabilities every pipeline folder must grant the runner, in plain words. */
+const REQUIRED_CAPS = {
+  canListChildren: 'list the files in it',
+  canAddChildren: 'create or move files into it'
+};
 
 /**
- * Whether a prior poll already claimed this file by copy. appProperties are private to this script's project.
- * Never throws; an unreadable property means "not claimed" and the normal path decides.
- * @param {GoogleAppsScript.Drive.File} file
- * @return {boolean}
+ * Inspect one folder as the running identity. Never throws: a folder that cannot be opened is reported, not raised.
+ * @param {string} key Config key.
+ * @param {string} id  Folder id (may be '').
+ * @return {{key:string, id:string, name:string, owner:string, sharedDrive:boolean, ok:boolean, problems:string[], notes:string[]}}
  * @private
  */
-function isClaimed_(file) {
+function inspectFolder_(key, id) {
+  const out = { key: key, id: id, name: '', owner: '', sharedDrive: false, ok: false, problems: [], notes: [] };
+  if (!id) { out.problems.push('is not set'); return out; }
+
+  let f;
   try {
-    const p = Drive.Files.get(file.getId(), { fields: 'appProperties', supportsAllDrives: true }).appProperties || {};
-    return p[CLAIM_KEY] === 'true';
+    f = Drive.Files.get(id, {
+      supportsAllDrives: true,
+      fields: 'id,name,mimeType,driveId,trashed,owners(emailAddress),capabilities(canListChildren,canAddChildren)'
+    });
   } catch (e) {
-    return false;
+    const msg = String((e && e.message) || e);
+    out.problems.push('cannot be opened by ' + runnerEmail_() + ' [' + classifyError_(msg) + ']: ' + msg);
+    return out;
   }
+
+  out.name = f.name || '';
+  out.sharedDrive = !!f.driveId;
+  out.owner = (((f.owners || [])[0] || {}).emailAddress || '').toLowerCase();
+  // Ownership is informational: with Editor on a folder someone else owns, the loops still work (Claim.gs copies
+  // what it cannot move). It becomes a dependency on that person's sharing, so say so, but do not fail the run.
+  if (!out.sharedDrive && out.owner && out.owner !== runnerEmail_().toLowerCase()) {
+    out.notes.push('owned by ' + out.owner + ' — the pipeline depends on their sharing staying at Editor');
+  }
+  if (f.mimeType !== MimeType.FOLDER) out.problems.push('is not a folder (' + f.mimeType + ')');
+  if (f.trashed) out.problems.push('is in the trash');
+  const caps = f.capabilities || {};
+  Object.keys(REQUIRED_CAPS).forEach(function (c) {
+    if (!caps[c]) out.problems.push('does not let ' + runnerEmail_() + ' ' + REQUIRED_CAPS[c] + ' (' + c + ')');
+  });
+  out.ok = out.problems.length === 0;
+  return out;
 }
 
 /**
- * Move the file into `folder`; if Drive refuses on permission grounds, copy it there instead and mark the original.
- * Returns the file that now lives in `folder` — the original on a move, the copy otherwise.
- * @param {GoogleAppsScript.Drive.File} file
- * @param {GoogleAppsScript.Drive.Folder} folder
- * @return {GoogleAppsScript.Drive.File}
- * @throws {Error} Any non-permission failure, unchanged.
+ * Inspect the configured folders.
+ * @param {Config} cfg
+ * @param {string[]=} keys Subset of FOLDER_KEYS; default all.
+ * @return {Array<Object>} One inspectFolder_ result per key.
  * @private
  */
-function claimOriginal_(file, folder) {
-  try {
-    file.moveTo(folder);
-    return file;
-  } catch (err) {
-    if (!/access denied|permission|forbidden|not have access/i.test(String((err && err.message) || err))) throw err;
-  }
-  const copy = file.makeCopy(file.getName(), folder);
-  const props = {}; props[CLAIM_KEY] = 'true';
-  Drive.Files.update({ appProperties: props }, file.getId(), null, { supportsAllDrives: true });
-  logInfo_('processIngestion', 'Copied (not moved) ' + file.getName() + ' — original is owned by ' + ownerOf_(file), '', copy.getUrl());
-  return copy;
+function checkFolderAccess_(cfg, keys) {
+  return (keys || FOLDER_KEYS).map(function (k) { return inspectFolder_(k, cfg[k]); });
 }
 
 /**
- * Point a review sheet's "Original file" link and "Source file ID" at the kept copy.
- * @param {string} sheetId Review spreadsheet id.
- * @param {GoogleAppsScript.Drive.File} kept
+ * Throw one readable error if any of the given folders is unusable by the running identity.
+ * Six Drive reads per run is cheap; a trigger that fails with "folder_id_pending (Pending) does not let
+ * bot@corp.com create or move files into it" is worth far more than the quota.
+ * @param {Config} cfg
+ * @param {string[]=} keys Subset of FOLDER_KEYS; default all.
+ * @return {Array<Object>} The report, for callers that want it.
+ * @throws {Error}
  * @private
  */
-function repointSheet_(sheetId, kept) {
-  const ss = SpreadsheetApp.openById(sheetId);
-  const sheet = ss.getSheetByName(REVIEW_SHEET_TAB) || ss.getSheets()[0];
-  setMeta_(sheet, META.SOURCE_ID, kept.getId());
-  const col = sheet.getRange(1, 1, Math.min(sheet.getLastRow(), 30), 1).getValues();
-  for (let i = 0; i < col.length; i++) {
-    if (sameLabel_(col[i][0], META.ORIGINAL)) {
-      sheet.getRange(i + 1, 2).setFormula('=HYPERLINK("' + kept.getUrl() + '","' + kept.getName().replace(/"/g, "'") + '")');
-      break;
-    }
+function assertFolderAccess_(cfg, keys) {
+  const report = checkFolderAccess_(cfg, keys);
+  const bad = report.filter(function (r) { return !r.ok; });
+  if (bad.length) {
+    throw new Error('Folder access check failed as ' + runnerEmail_() + ': ' +
+      bad.map(function (r) { return r.key + ' (' + (r.name || r.id) + ') ' + r.problems.join('; '); }).join(' | '));
   }
+  return report;
 }
 
 /**
- * Owner email for a log line; '' if Drive withholds it. Never throws.
- * @param {GoogleAppsScript.Drive.File} file
+ * Manual / menu entry: one line per folder plus the identity that was checked. Returns the text it logged.
+ * @return {string}
+ */
+function checkAccess() {
+  const cfg = readConfig_();
+  const lines = checkFolderAccess_(cfg).map(function (r) {
+    return (r.ok ? 'OK    ' : 'FAIL  ') + r.key + '  ' + (r.name || r.id || '(unset)') +
+      (r.id ? (r.sharedDrive ? '  [shared drive]' : '  [My Drive — move to a shared drive]') : '') +
+      (r.problems.length ? '\n        ' + r.problems.join('\n        ') : '') +
+      (r.notes.length ? '\n        note: ' + r.notes.join('\n        note: ') : '');
+  });
+  const text = 'Checked as ' + runnerEmail_() + '\n' + lines.join('\n');
+  Logger.log(text);
+  return text;
+}
+
+/** Same as checkAccess(), shown in a dialog. Wire into onOpen(): .addItem('Check folder access', 'checkAccessUi'). */
+function checkAccessUi() {
+  const ui = SpreadsheetApp.getUi();
+  ui.alert('Folder access', checkAccess(), ui.ButtonSet.OK);
+}
+
+/**
+ * The identity whose permissions are in play (trigger owner / deployer). Never throws.
  * @return {string}
  * @private
  */
-function ownerOf_(file) {
-  try { return file.getOwner().getEmail() || ''; } catch (e) { return ''; }
+function runnerEmail_() {
+  try { return Session.getEffectiveUser().getEmail() || '(unknown account)'; }
+  catch (e) { return '(unknown account)'; }
+}
+
+/**
+ * Create a file directly inside a folder, shared-drive safe, and return its id.
+ *
+ * SpreadsheetApp.create() and Drive.Files.create() without `parents` land in the runner's My Drive root first.
+ * A crash before the follow-up move leaves an orphan there, and moving INTO a shared drive is governed by a
+ * domain policy the runner may not control. Creating in place removes both.
+ *
+ * @param {string} name
+ * @param {string} mimeType  e.g. MimeType.GOOGLE_SHEETS, MimeType.GOOGLE_DOCS
+ * @param {string} parentId
+ * @param {GoogleAppsScript.Base.Blob=} blob Content to upload/convert, or omit for an empty native file.
+ * @return {string} New file id.
+ * @private
+ */
+function createInPlace_(name, mimeType, parentId, blob) {
+  const meta = { name: name, mimeType: mimeType, parents: [parentId] };
+  const created = Drive.Files.create(meta, blob || null, { supportsAllDrives: true });
+  return created.id;
 }
