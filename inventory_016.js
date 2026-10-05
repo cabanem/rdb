@@ -21,16 +21,19 @@
  * Script properties (resolved in AppConfig.get().RECIPE_ORDER — nothing here reads PropertiesService):
  *   GOLDEN_FOLDER_ID       root folder of the golden project; walked recursively
  *   RECIPE_ORDER_SHEET_ID  spreadsheet for the RecipeOrder + RecipeOrderLog tabs (blank = active sheet)
- *   RTR_TARGETS            JSON: [{ "label": "TEST", "token_prop": "ROUTER_TEST_TOKEN", "table_id": "..." }, ...]
- *                          one entry per router environment; each token_prop names a script property.
+ *   RTR_TARGETS            JSON: [{ "label": "TEST", "token_prop": "ROUTER_TEST_TOKEN", "table_id": "<uuid>" }, ...]
+ *                          one entry per router environment; token_prop NAMES a script property holding that
+ *                          environment's API-client token; table_id is the table's UUID (not the UI's number).
+ *   DATA_TABLES_BASE_URL   data-tables host for the data center (defaults to https://data-tables.eu.workato.com/api)
  *
  * @author emily.cabaniss@randstadsourceright.com
- * @version 0.2.0
+ * @version 0.2.1
  */
 
 var RO_TABLE_HEADER = ['recipe_name', 'position', 'callable', 'recipe_id', 'level_size'];
 var RO_LOG_HEADER   = ['at', 'action', 'ok', 'recipe_count', 'level_count', 'row_fingerprint', 'edge_fingerprint', 'changed', 'detail'];
 var RO_LAST_KEY     = 'RECIPE_ORDER_LAST';
+var RO_UUID         = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // -------------------------------------------------------------------------------------------------------
 // ENTRY POINTS (menu / trigger-safe wrappers over the command registry)
@@ -67,9 +70,9 @@ class RecipeOrderRunner {
       let detail = roDescribe_(result);
       if (action === 'rebuild') {
         cfg.TARGETS.forEach(t => {
-          const client = WorkatoLib.newClient(t.token, ctx.config.API.BASE_URL);   // environment-scoped
+          const client = WorkatoLib.newClient(t.token, cfg.DATA_TABLES_BASE_URL);   // environment-scoped token
           const w = roReplaceTable_(client, t.tableId, result.rows);
-          detail += `\n${t.label}: deleted ${w.deleted}, inserted ${w.inserted}`;
+          detail += `\n${t.label}: truncated, inserted ${w.inserted}`;
         });
       }
 
@@ -96,8 +99,9 @@ class RecipeOrderRunner {
         if (t.error)          problems.push(`${t.label}: ${t.error}`);
         else {
           if (!t.tokenProp)   problems.push(`${t.label}: RTR_TARGETS entry has no "token_prop"`);
-          else if (!t.token)  problems.push(`${t.label}: script property "${t.tokenProp}" (named by RTR_TARGETS.token_prop) is not set`);
-          if (!t.tableId)     problems.push(`${t.label}: RTR_TARGETS entry has no "table_id"`);
+          else if (!t.token)  problems.push(`${t.label}: script property named by RTR_TARGETS.token_prop is not set` +
+            (/^[A-Z][A-Z0-9_]*$/.test(t.tokenProp) ? ` ("${t.tokenProp}")` : ' (token_prop must be a property NAME, not the token)'));
+          if (!RO_UUID.test(t.tableId)) problems.push(`${t.label}: "table_id" must be the data table's UUID, not its numeric id`);
         }
       });
     }
@@ -256,53 +260,40 @@ function roCrossCheckManifest_(client, folderId, result) {
 }
 
 // -------------------------------------------------------------------------------------------------------
-// WRITE PATH — Developer API data-table records
+// WRITE PATH — Workato Data Tables API (data-tables.<dc>.workato.com), per the published OpenAPI spec
 // -------------------------------------------------------------------------------------------------------
 //
-// !! Endpoint shapes to confirm against your Data Tables connector before the first rebuild. What is
-//    assumed here: the table's schema exposes its columns with an id and a name; records come back as
-//    { record_id, document } with document keyed by column id; create takes one record; delete is per
-//    record. Change these four functions only — nothing above them cares how the write happens.
+// Two APIs share the data-tables host: table management at  <base>/data_tables/{uuid}[/truncate]  and the
+// records API at  <base>/v1/tables/{uuid}/records . Both key the table by UUID; the number in the UI's URL
+// is not an API identifier. Records are written by field NAME — no column-id lookup — but the records API
+// silently IGNORES fields that are not in the schema, so the schema is checked first: a table missing one
+// of the three contract columns must fail here, not produce a table that is quietly wrong.
 //
-// Order of operations is deliberate: the sort has already succeeded before we get here, and delete-all
-// runs before insert, so the table is either untouched, empty+partial (POOL-14 refuses), or complete.
+// Order of operations is deliberate: the sort has already succeeded before we get here, and truncate runs
+// before insert, so the table is either untouched, empty+partial (POOL-14 refuses), or complete.
 
 function roReplaceTable_(client, tableId, rows) {
-  var columns = roTableColumns_(client, tableId);           // { recipe_name: <col id>, ... }
+  var have = roTableColumnNames_(client, tableId);
   RO_TABLE_HEADER.slice(0, 3).forEach(function (c) {
-    if (!columns[c]) throw new Error('RTR_RecipeOrder (' + tableId + ') has no column "' + c + '"');
+    if (!have[c]) throw new Error('RTR_RecipeOrder (' + tableId + ') has no column "' + c + '"');
   });
 
-  var existing = roListRecords_(client, tableId);
-  existing.forEach(function (rec) { client.delete('data_tables/' + tableId + '/records/' + rec.record_id); });
+  client.post('data_tables/' + tableId + '/truncate', {});
 
   rows.forEach(function (r) {
-    var doc = {};
-    doc[columns.recipe_name] = r.recipe_name;
-    doc[columns.position]    = r.position;
-    doc[columns.callable]    = r.callable;
-    client.post('data_tables/' + tableId + '/records', { data: doc });
+    client.post('v1/tables/' + tableId + '/records', {
+      document: { recipe_name: r.recipe_name, position: r.position, callable: r.callable }
+    });
   });
-  return { deleted: existing.length, inserted: rows.length };
+  return { inserted: rows.length };
 }
 
-/** name -> column id. */
-function roTableColumns_(client, tableId) {
-  var table = client.get('data_tables/' + tableId);
-  var schema = table.schema || table.columns || (table.data && table.data.schema) || [];
+/** { <column name>: true } from the table-management GET. */
+function roTableColumnNames_(client, tableId) {
+  var res = client.get('data_tables/' + tableId);
+  var table = res && res.data ? res.data : res;
   var out = {};
-  schema.forEach(function (c) { out[c.name] = c.field_id || c.id || c.name; });
-  return out;
-}
-
-/** Every record, following the continuation token. */
-function roListRecords_(client, tableId) {
-  var out = [], token = null, guard = 0;
-  do {
-    var res = client.get('data_tables/' + tableId + '/records' + (token ? '?continuation_token=' + encodeURIComponent(token) : ''));
-    (res.data || res.records || []).forEach(function (r) { out.push(r); });
-    token = res.continuation_token || null;
-  } while (token && ++guard < 100);
+  (table.schema || []).forEach(function (c) { out[c.name] = true; });
   return out;
 }
 
