@@ -1,130 +1,123 @@
 /**
- * @file RecipeOrder — generates RTR_RecipeOrder from golden
- * @description Reads golden's recipe set and call graph, levels it, and replaces the router's
- *              RTR_RecipeOrder table wholesale. Lives beside the other estate runners in the
- *              DataBridge inventory app. Never filters; never merges; never hand-edited output.
+ * @file 016_Feature_RestartOrder.js
+ * @description RecipeOrder — generates RTR_RecipeOrder from golden. Reads golden's recipe set and call
+ *              graph, levels it, and replaces the router's RTR_RecipeOrder table wholesale. Never filters;
+ *              never merges; never hand-edited output.
  *
- *              Libraries (same symbols as the Watchdog observer):
- *                WorkatoLib       - Developer API client (get/post/delete/fetchPaginated)
- *                WorkatoGraphLib  - call-edge extraction from recipe code
- *                WorkatoOrderLib  - buildCorpusGraph / levels / fingerprint / diffEdges (>= 0.3.0)
+ *              Runs inside the app's normal plumbing: AppConfig.RECIPE_ORDER for settings, ctx.client for the
+ *              golden read (API.TOKEN — golden IS the inventoried workspace), a strict RecipeAnalyzerService
+ *              over that client, OrderLib for levels / fingerprints. The only feature-owned construction is
+ *              one WorkatoLib client per router target, because TEST and PROD are separate environments
+ *              with separate API-client tokens.
  *
- *              Two entry points, both menu-safe:
- *                recipeOrderPreview() - compute rows, write them to the RecipeOrder tab, touch no table.
- *                recipeOrderRebuild() - compute rows, then replace RTR_RecipeOrder in every router target.
+ *              Commands:  order.preview  - compute rows, write them to the RecipeOrder tab, touch no table.
+ *                         order.rebuild  - compute rows, then replace RTR_RecipeOrder in every router target.
  *
  *              The table's contract (see the handoff): recipe_name (string, golden's exact name),
  *              position (integer, ascending start order; ties allowed), callable (boolean).
  *              POOL-14 is the only reader and refuses to start anything on a bidirectional mismatch,
  *              so a partial write is safe by construction — it can only ever stop a register.
  *
- * Script properties:
- *   WORKATO_DEV_TOKEN      golden's DEV token (read-only use here)
- *   WORKATO_BASE_URL       e.g. https://app.eu.workato.com/api  (defaults to that)
+ * Script properties (resolved in AppConfig.get().RECIPE_ORDER — nothing here reads PropertiesService):
  *   GOLDEN_FOLDER_ID       root folder of the golden project; walked recursively
- *   RECIPE_ORDER_SHEET_ID  spreadsheet for the RecipeOrder + RecipeOrderLog tabs (defaults to the active sheet)
+ *   RECIPE_ORDER_SHEET_ID  spreadsheet for the RecipeOrder + RecipeOrderLog tabs (blank = active sheet)
  *   RTR_TARGETS            JSON: [{ "label": "TEST", "token_prop": "ROUTER_TEST_TOKEN", "table_id": "..." }, ...]
- *                          one entry per router environment that holds an RTR_RecipeOrder table.
- *                          Data-table ROWS are per environment in Workato, so TEST and PROD are two writes.
+ *                          one entry per router environment; each token_prop names a script property.
  *
  * @author emily.cabaniss@randstadsourceright.com
- * @version 0.1.1
+ * @version 0.2.0
  */
-
-// -------------------------------------------------------------------------------------------------------
-// CONFIG
-// -------------------------------------------------------------------------------------------------------
-
-function roCfg_() {
-  var p = PropertiesService.getScriptProperties();
-  return {
-    devToken:  roProp_('WORKATO_DEV_TOKEN'),
-    baseUrl:   roProp_('WORKATO_BASE_URL') || 'https://app.eu.workato.com/api',
-    goldenFolderId: p.getProperty('GOLDEN_FOLDER_ID'),
-    sheetId:   p.getProperty('RECIPE_ORDER_SHEET_ID'),
-    targets:   JSON.parse(p.getProperty('RTR_TARGETS') || '[]').map(function (t, i) {
-      return {
-        label:     t.label || ('target[' + i + ']'),
-        tokenProp: t.token_prop,
-        token:     t.token_prop ? roProp_(t.token_prop) : null,
-        tableId:   t.table_id != null ? String(t.table_id) : ''
-      };
-    })
-  };
-}
-
-/**
- * Secrets resolve the same way as everywhere else in this app (ConfigStore: user property first,
- * then script property). The rest of the inventory app migrated its token to user scope; without this
- * a token set through the "Update API Token" prompt is invisible to the order runner.
- */
-function roProp_(key) {
-  return ConfigStore.get(key, { preferUser: true, defaultValue: '' }) || null;
-}
-
-/**
- * Fail before any network work with a message that names the property that is missing, instead of
- * WorkatoLib's generic "API Token is required" from inside the target loop.
- */
-function roAssertCfg_(cfg, action) {
-  var problems = [];
-  if (!cfg.devToken)       problems.push('WORKATO_DEV_TOKEN is not set');
-  if (!cfg.goldenFolderId) problems.push('GOLDEN_FOLDER_ID is not set');
-  if (action === 'rebuild') {
-    if (!cfg.targets.length) problems.push('RTR_TARGETS is empty; nothing to write to');
-    cfg.targets.forEach(function (t) {
-      if (!t.tokenProp) problems.push(t.label + ': RTR_TARGETS entry has no "token_prop"');
-      else if (!t.token) problems.push(t.label + ': property "' + t.tokenProp + '" (named by RTR_TARGETS.token_prop) is not set');
-      if (!t.tableId)   problems.push(t.label + ': RTR_TARGETS entry has no "table_id"');
-    });
-  }
-  if (problems.length) throw new Error('RecipeOrder config: ' + problems.join('; '));
-}
 
 var RO_TABLE_HEADER = ['recipe_name', 'position', 'callable', 'recipe_id', 'level_size'];
 var RO_LOG_HEADER   = ['at', 'action', 'ok', 'recipe_count', 'level_count', 'row_fingerprint', 'edge_fingerprint', 'changed', 'detail'];
+var RO_LAST_KEY     = 'RECIPE_ORDER_LAST';
 
 // -------------------------------------------------------------------------------------------------------
-// ENTRY POINTS
+// ENTRY POINTS (menu / trigger-safe wrappers over the command registry)
 // -------------------------------------------------------------------------------------------------------
 
 /** Compute and show. Writes nothing to Workato. */
-function recipeOrderPreview() { return roRun_('preview'); }
+function recipeOrderPreview() { return Commands.run('order.preview'); }
 
 /** Compute, then replace RTR_RecipeOrder in every configured router target. */
-function recipeOrderRebuild() { return roRun_('rebuild'); }
+function recipeOrderRebuild() { return Commands.run('order.rebuild'); }
 
-function roRun_(action) {
-  var cfg = roCfg_();
-  var ss = cfg.sheetId ? SpreadsheetApp.openById(cfg.sheetId) : SpreadsheetApp.getActiveSpreadsheet();
-  try {
-    roAssertCfg_(cfg, action);
-    var result = roCompute_(cfg);
-    var prev = roReadLast_(ss);
-    result.changed = !prev || prev.row_fingerprint !== result.rowFingerprint;
-    result.edgeDiff = prev && prev.edges ? RO_orderer_().diffEdges(prev.edges, result.edges) : null;
+// -------------------------------------------------------------------------------------------------------
+// RUNNER
+// -------------------------------------------------------------------------------------------------------
 
-    roWriteTab_(ss, result);
+class RecipeOrderRunner {
+  /**
+   * @param {AppContext} ctx
+   * @param {'preview'|'rebuild'} action
+   */
+  run(ctx, action) {
+    const cfg = ctx.config.RECIPE_ORDER;
+    const ss = cfg.SHEET_ID ? SpreadsheetApp.openById(cfg.SHEET_ID) : SpreadsheetApp.getActiveSpreadsheet();
+    try {
+      this.assertConfig_(cfg, action);
 
-    var detail = roDescribe_(result);
+      const result = this.compute_(ctx, cfg);
+      const prev = roReadLast_();
+      result.changed = !prev || prev.row_fingerprint !== result.rowFingerprint;
+      result.edgeDiff = prev && prev.edges ? this.orderer_().diffEdges(prev.edges, result.edges) : null;
+
+      roWriteTab_(ss, result);
+
+      let detail = roDescribe_(result);
+      if (action === 'rebuild') {
+        cfg.TARGETS.forEach(t => {
+          const client = WorkatoLib.newClient(t.token, ctx.config.API.BASE_URL);   // environment-scoped
+          const w = roReplaceTable_(client, t.tableId, result.rows);
+          detail += `\n${t.label}: deleted ${w.deleted}, inserted ${w.inserted}`;
+        });
+      }
+
+      roLog_(ss, action, true, result, detail);
+      ctx.logger.notify(detail);
+      return result;
+    } catch (e) {
+      let msg = String(e && e.message || e);
+      if (e && e.findings && e.findings.length) {
+        msg += '\n' + e.findings.map(f => `[${f.code}] ${f.detail}`).join('\n');
+      }
+      roLog_(ss, action, false, null, msg);
+      throw e;
+    }
+  }
+
+  /** Fail before any network work, naming exactly what is missing. */
+  assertConfig_(cfg, action) {
+    const problems = [];
+    if (!cfg.GOLDEN_FOLDER_ID) problems.push('GOLDEN_FOLDER_ID is not set');
     if (action === 'rebuild') {
-      cfg.targets.forEach(function (t) {
-        var client = WorkatoLib.newClient(t.token, cfg.baseUrl);
-        var w = roReplaceTable_(client, t.tableId, result.rows);
-        detail += '\n' + t.label + ': deleted ' + w.deleted + ', inserted ' + w.inserted;
+      if (!cfg.TARGETS.length) problems.push('RTR_TARGETS is empty; nothing to write to');
+      cfg.TARGETS.forEach(t => {
+        if (t.error)          problems.push(`${t.label}: ${t.error}`);
+        else {
+          if (!t.tokenProp)   problems.push(`${t.label}: RTR_TARGETS entry has no "token_prop"`);
+          else if (!t.token)  problems.push(`${t.label}: script property "${t.tokenProp}" (named by RTR_TARGETS.token_prop) is not set`);
+          if (!t.tableId)     problems.push(`${t.label}: RTR_TARGETS entry has no "table_id"`);
+        }
       });
     }
+    if (problems.length) throw new Error('RecipeOrder config: ' + problems.join('; '));
+  }
 
-    roLog_(ss, action, true, result, detail);
-    Logger.log(detail);
+  orderer_() { return OrderLib.newOrderer({ strict: true }); }
+
+  /** Fetch golden, derive the graph, level it, shape rows. Throws on anything that would make the table a lie. */
+  compute_(ctx, cfg) {
+    const corpus = roFetchCorpus_(ctx.client, cfg.GOLDEN_FOLDER_ID);
+
+    // Strict on purpose: ctx.analyzerService (non-strict) would turn a fetch or parse failure into
+    // "zero edges" and the table would be wrong without an error.
+    const analyzer = new RecipeAnalyzerService(ctx.client, { strict: true });
+    analyzer.primeCache(corpus.recipes);
+
+    const result = buildRecipeOrder(corpus.recipes, analyzer, this.orderer_());
+    result.crossCheck = roCrossCheckManifest_(ctx.client, cfg.GOLDEN_FOLDER_ID, result);
     return result;
-  } catch (e) {
-    var msg = String(e && e.message || e);
-    if (e && e.findings && e.findings.length) {
-      msg += '\n' + e.findings.map(function (f) { return '[' + f.code + '] ' + f.detail; }).join('\n');
-    }
-    roLog_(ss, action, false, null, msg);
-    throw e;
   }
 }
 
@@ -132,27 +125,12 @@ function roRun_(action) {
 // COMPUTE (I/O in, pure out)
 // -------------------------------------------------------------------------------------------------------
 
-function RO_orderer_() { return WorkatoOrderLib.newOrderer({ strict: true }); }
-
-/** Fetch golden, derive the graph, level it, shape rows. Throws on anything that would make the table a lie. */
-function roCompute_(cfg) {
-  var client = WorkatoLib.newClient(cfg.devToken, cfg.baseUrl, { dryRun: true });
-  var corpus = roFetchCorpus_(client, cfg.goldenFolderId);
-
-  var analyzer = WorkatoGraphLib.newAnalyzer(client, { STRICT: true });
-  analyzer.primeCache(corpus.recipes);
-
-  var result = buildRecipeOrder(corpus.recipes, analyzer, RO_orderer_());
-  result.crossCheck = roCrossCheckManifest_(client, cfg.goldenFolderId, result);
-  return result;
-}
-
 /**
  * The pure core. Testable with a primed analyzer and any Orderer.
  *
  * @param {Array<Object>} recipes  - list-endpoint objects for every recipe in the golden folder tree (with code)
  * @param {Object} analyzer        - WorkatoGraphLib analyzer, cache primed with those recipes
- * @param {Object} orderer         - WorkatoOrderLib orderer (strict)
+ * @param {Object} orderer         - OrderLib orderer (strict)
  * @returns {{rows, levels, edges, nodes, recipeCount, levelCount, rowFingerprint, edgeFingerprint, findings}}
  */
 function buildRecipeOrder(recipes, analyzer, orderer) {
@@ -349,15 +327,15 @@ function roLog_(ss, action, ok, result, detail) {
     result ? result.changed : '', detail
   ]);
   if (ok && result) {
-    PropertiesService.getScriptProperties().setProperty('RECIPE_ORDER_LAST', JSON.stringify({
+    ConfigStore.setScript(RO_LAST_KEY, JSON.stringify({
       at: new Date().toISOString(), row_fingerprint: result.rowFingerprint,
       edge_fingerprint: result.edgeFingerprint, edges: result.edges
     }));
   }
 }
 
-function roReadLast_(ss) {
-  var raw = PropertiesService.getScriptProperties().getProperty('RECIPE_ORDER_LAST');
+function roReadLast_() {
+  var raw = ConfigStore.get(RO_LAST_KEY, { preferUser: false, defaultValue: '' });
   return raw ? JSON.parse(raw) : null;
 }
 
