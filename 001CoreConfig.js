@@ -157,7 +157,7 @@ class SchemaDef {
  */
 class AppConfig {
   /**
-   * RTR_TARGETS JSON -> [{ label, tableId, tokenProp, token }]. Tokens are resolved here so the feature
+   * RTR_TARGETS JSON -> [{ label, table, tokenProp, token }], one per router environment. Tokens are resolved here so the feature
    * never touches PropertiesService. A malformed JSON is reported as one target with an `error` field
    * rather than thrown, so a bad RTR_TARGETS cannot take down AppConfig.get() for every other feature.
    * @private
@@ -169,7 +169,7 @@ class AppConfig {
     if (!Array.isArray(list)) return [{ label: 'RTR_TARGETS', error: 'must be a JSON array' }];
     return list.map((t, i) => ({
       label: t.label || `target[${i}]`,
-      tableId: t.table_id != null ? String(t.table_id) : '',
+      table: String(t.table || 'RTR_RecipeOrder'),   // resolved to a UUID by name at run time
       tokenProp: t.token_prop || '',
       token: t.token_prop ? (ConfigStore.get(t.token_prop, { preferUser: false, defaultValue: '' }) || '') : ''
     }));
@@ -240,7 +240,7 @@ class AppConfig {
       RECIPE_ORDER: {
         GOLDEN_FOLDER_ID: ConfigStore.get('GOLDEN_FOLDER_ID', { preferUser: false, defaultValue: "" }),
         SHEET_ID: ConfigStore.get('RECIPE_ORDER_SHEET_ID', { preferUser: false, defaultValue: "" }), // "" = active sheet
-        // Data Tables API host for the data center (table management + records). Not the Developer API host.
+        // Record-manipulation host (v1/tables/...). Table management (list/truncate) stays on API.BASE_URL.
         DATA_TABLES_BASE_URL: (ConfigStore.get('DATA_TABLES_BASE_URL', {
           preferUser: false, defaultValue: 'https://data-tables.eu.workato.com/api'
         }) || 'https://data-tables.eu.workato.com/api').replace(/\/$/, ''),
