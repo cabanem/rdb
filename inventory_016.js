@@ -21,19 +21,20 @@
  * Script properties (resolved in AppConfig.get().RECIPE_ORDER — nothing here reads PropertiesService):
  *   GOLDEN_FOLDER_ID       root folder of the golden project; walked recursively
  *   RECIPE_ORDER_SHEET_ID  spreadsheet for the RecipeOrder + RecipeOrderLog tabs (blank = active sheet)
- *   RTR_TARGETS            JSON: [{ "label": "TEST", "token_prop": "ROUTER_TEST_TOKEN", "table_id": "<uuid>" }, ...]
- *                          one entry per router environment; token_prop NAMES a script property holding that
- *                          environment's API-client token; table_id is the table's UUID (not the UI's number).
- *   DATA_TABLES_BASE_URL   data-tables host for the data center (defaults to https://data-tables.eu.workato.com/api)
+ *   RTR_TARGETS            JSON: [{ "label": "TEST", "token_prop": "ROUTER_TEST_TOKEN" }, ...]
+ *                          one entry per router ENVIRONMENT (not per table); token_prop NAMES a script property
+ *                          holding that environment's API-client token. Optional "table" overrides the table
+ *                          name (default RTR_RecipeOrder); the table's UUID is resolved by name at run time.
+ *   DATA_TABLES_BASE_URL   RECORD-manipulation host for the data center (defaults to https://data-tables.eu.workato.com/api);
+ *                          table management (list / truncate) uses the Developer API host, API.BASE_URL
  *
  * @author emily.cabaniss@randstadsourceright.com
- * @version 0.2.1
+ * @version 0.2.3
  */
 
 var RO_TABLE_HEADER = ['recipe_name', 'position', 'callable', 'recipe_id', 'level_size'];
 var RO_LOG_HEADER   = ['at', 'action', 'ok', 'recipe_count', 'level_count', 'row_fingerprint', 'edge_fingerprint', 'changed', 'detail'];
 var RO_LAST_KEY     = 'RECIPE_ORDER_LAST';
-var RO_UUID         = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // -------------------------------------------------------------------------------------------------------
 // ENTRY POINTS (menu / trigger-safe wrappers over the command registry)
@@ -70,9 +71,12 @@ class RecipeOrderRunner {
       let detail = roDescribe_(result);
       if (action === 'rebuild') {
         cfg.TARGETS.forEach(t => {
-          const client = WorkatoLib.newClient(t.token, cfg.DATA_TABLES_BASE_URL);   // environment-scoped token
-          const w = roReplaceTable_(client, t.tableId, result.rows);
-          detail += `\n${t.label}: truncated, inserted ${w.inserted}`;
+          // One token, two hosts: table management lives on the Developer API host, record manipulation
+          // on the data-tables host. WorkatoLib binds a base URL per client, hence two clients per target.
+          const mgmt    = WorkatoLib.newClient(t.token, ctx.config.API.BASE_URL);
+          const records = WorkatoLib.newClient(t.token, cfg.DATA_TABLES_BASE_URL);
+          const w = roReplaceTable_(mgmt, records, t.table, result.rows);
+          detail += `\n${t.label}: ${t.table} (${w.tableId}) truncated, inserted ${w.inserted}`;
         });
       }
 
@@ -101,7 +105,7 @@ class RecipeOrderRunner {
           if (!t.tokenProp)   problems.push(`${t.label}: RTR_TARGETS entry has no "token_prop"`);
           else if (!t.token)  problems.push(`${t.label}: script property named by RTR_TARGETS.token_prop is not set` +
             (/^[A-Z][A-Z0-9_]*$/.test(t.tokenProp) ? ` ("${t.tokenProp}")` : ' (token_prop must be a property NAME, not the token)'));
-          if (!RO_UUID.test(t.tableId)) problems.push(`${t.label}: "table_id" must be the data table's UUID, not its numeric id`);
+          if (!t.table)       problems.push(`${t.label}: "table" is empty`);
         }
       });
     }
@@ -260,41 +264,57 @@ function roCrossCheckManifest_(client, folderId, result) {
 }
 
 // -------------------------------------------------------------------------------------------------------
-// WRITE PATH — Workato Data Tables API (data-tables.<dc>.workato.com), per the published OpenAPI spec
+// WRITE PATH — two Workato APIs, two hosts (docs.workato.com/en/workato-api/data-tables)
 // -------------------------------------------------------------------------------------------------------
 //
-// Two APIs share the data-tables host: table management at  <base>/data_tables/{uuid}[/truncate]  and the
-// records API at  <base>/v1/tables/{uuid}/records . Both key the table by UUID; the number in the UI's URL
-// is not an API identifier. Records are written by field NAME — no column-id lookup — but the records API
+// Table management (list, get, truncate) is Developer API:  <API.BASE_URL>/data_tables/{uuid}[/truncate]
+// Record manipulation is the data-tables service:           <DATA_TABLES_BASE_URL>/v1/tables/{uuid}/records
+// Both key the table by UUID; the number in the UI's URL is not an API identifier. Records are written by field NAME — no column-id lookup — but the records API
 // silently IGNORES fields that are not in the schema, so the schema is checked first: a table missing one
 // of the three contract columns must fail here, not produce a table that is quietly wrong.
 //
 // Order of operations is deliberate: the sort has already succeeded before we get here, and truncate runs
 // before insert, so the table is either untouched, empty+partial (POOL-14 refuses), or complete.
 
-function roReplaceTable_(client, tableId, rows) {
-  var have = roTableColumnNames_(client, tableId);
+function roReplaceTable_(mgmt, records, tableName, rows) {
+  var table = roFindTable_(mgmt, tableName);                   // { id: <uuid>, schema: [{ name, ... }] }
+  var have = {};
+  (table.schema || []).forEach(function (c) { have[c.name] = true; });
   RO_TABLE_HEADER.slice(0, 3).forEach(function (c) {
-    if (!have[c]) throw new Error('RTR_RecipeOrder (' + tableId + ') has no column "' + c + '"');
+    if (!have[c]) throw new Error(tableName + ' (' + table.id + ') has no column "' + c + '"');
   });
 
-  client.post('data_tables/' + tableId + '/truncate', {});
+  mgmt.post('data_tables/' + table.id + '/truncate', {});
 
   rows.forEach(function (r) {
-    client.post('v1/tables/' + tableId + '/records', {
+    records.post('v1/tables/' + table.id + '/records', {
       document: { recipe_name: r.recipe_name, position: r.position, callable: r.callable }
     });
   });
-  return { inserted: rows.length };
+  return { tableId: table.id, inserted: rows.length };
 }
 
-/** { <column name>: true } from the table-management GET. */
-function roTableColumnNames_(client, tableId) {
-  var res = client.get('data_tables/' + tableId);
-  var table = res && res.data ? res.data : res;
-  var out = {};
-  (table.schema || []).forEach(function (c) { out[c.name] = true; });
-  return out;
+/**
+ * Resolve a table by NAME in the environment the client's token belongs to. The name is the same in every
+ * environment while the UUID is not, so config carries the name and nobody copies UUIDs by hand.
+ * The list endpoint returns { data: [...] }, which WorkatoLib.fetchPaginated does not unwrap — hence the loop.
+ */
+function roFindTable_(mgmt, tableName) {
+  var client = mgmt;
+  var matches = [], page = 1;
+  for (;;) {
+    var res = client.get('data_tables?page=' + page + '&per_page=100');
+    var batch = (res && res.data) || [];
+    batch.forEach(function (t) { if (t.name === tableName) matches.push(t); });
+    if (batch.length < 100) break;
+    page++;
+  }
+  if (matches.length !== 1) {
+    throw new Error('Expected exactly one data table named "' + tableName + '" in this environment, found ' + matches.length);
+  }
+  var t = matches[0];
+  if (!t.schema) { var full = client.get('data_tables/' + t.id); t = (full && full.data) || full; }
+  return t;
 }
 
 // -------------------------------------------------------------------------------------------------------
