@@ -240,6 +240,10 @@ class AppConfig {
       RECIPE_ORDER: {
         GOLDEN_FOLDER_ID: ConfigStore.get('GOLDEN_FOLDER_ID', { preferUser: false, defaultValue: "" }),
         SHEET_ID: ConfigStore.get('RECIPE_ORDER_SHEET_ID', { preferUser: false, defaultValue: "" }), // "" = active sheet
+        // Data Tables API host for the data center (table management + records). Not the Developer API host.
+        DATA_TABLES_BASE_URL: (ConfigStore.get('DATA_TABLES_BASE_URL', {
+          preferUser: false, defaultValue: 'https://data-tables.eu.workato.com/api'
+        }) || 'https://data-tables.eu.workato.com/api').replace(/\/$/, ''),
         TARGETS: AppConfig.recipeOrderTargets_()
       },
       // Python step inventory. The manifest.json always goes to Drive (when LOG_TO_DRIVE is on); the per-step .py files
