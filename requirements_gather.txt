@@ -1,0 +1,114 @@
+## Intent: why this work exists
+
+**Both integrations**
+1. What problem is Phase 2 meant to solve, and for whom?
+2. Why now? What is driving the timing: a client, a contract, an incident, an audit?
+3. What happens if we do nothing?
+4. How will we know it worked? What would we measure?
+5. If we could deliver only one outcome, which would it be: speed, accuracy, lower risk, or less manual effort?
+
+**Vendor master data**
+6. What goes wrong today because of how supplier data is collected: slow onboarding, payment failures, audit findings, duplicates?
+7. Who feels that pain most: suppliers, analysts, the client's accounts payable team, finance?
+8. Why should SDC collect this rather than the VMS's own supplier onboarding?
+9. Does SDC need to hold this data, or only get it to where it belongs?
+
+**Rate validation**
+10. What does a bad rate cost when it gets through: overbilling, invoice disputes, underpaid workers, audit findings?
+11. Who is rate validation protecting: the client's budget, the supplier relationship, the worker, REDACTED's compliance position?
+12. Is the goal catching errors, enforcing rate cards, or being able to prove compliance?
+13. At which point in the lifecycle does catching a bad rate matter most?
+
+## Process: how it happens today
+
+**Vendor master data**
+1. What starts a supplier setup: a program go-live, a mid-program addition, a client request?
+2. Walk me through the last supplier you set up, from first contact to their first requisition.
+3. How long did that take end to end, and how much of that time was active work?
+4. At what point is a supplier considered "set up," and does every team agree?
+5. How do you request supplier information, and how many versions of the intake form exist?
+6. Which documents do you collect alongside the data?
+7. What comes back incomplete or wrong most often?
+8. Where does the data go after you receive it, and how many times is it re-keyed?
+9. Who creates the vendor in the client's ERP, and how does the ERP vendor ID get back to you?
+10. Who verifies bank details, and how?
+11. Are tax and VAT IDs checked? Is sanctions screening done? By whom, with what tool, and where is the evidence kept?
+12. Who approves a supplier into the program, and does the client have a say?
+13. How do you chase missing information, and how many rounds does it usually take?
+14. Where do setups get stuck longest, and why?
+15. How do bank detail changes arrive, and how are they verified?
+16. Have you ever received a suspicious or fraudulent change request?
+17. Who tracks expiring documents, and what happens when one expires?
+18. How are suppliers deactivated or removed from a program?
+19. Where does supplier data end up living, and who can access it?
+20. If I asked for a supplier's current bank details and their history, how would you find them?
+21. Is the same supplier set up separately for each client program, and do the records ever disagree?
+22. How does the process differ by country or supplier type: agency, sole trader, SOW vendor?
+23. How many suppliers per program, at go-live and afterward?
+24. How often do payments fail or invoices get rejected because of supplier data?
+
+**Rate validation**
+25. At what points are rates checked today: requisition, offer, work order, conversion, invoice audit?
+26. Does the VMS already enforce rate cards anywhere?
+27. Who does the checking, and with what access and authority?
+28. Where does the rate card live? Can I see the actual file?
+29. How do you know which rate card version applies to a given engagement?
+30. Where are supplier markup caps written down?
+31. Are rate card bill rates gross or net of the MSP fee?
+32. Walk me through the last rate check you did. What did you look at first?
+33. What makes you stop and look closer?
+34. Show me one you rejected, and one that looked wrong but was fine.
+35. How do you tell a typo from a real rate?
+36. How are rate exceptions approved, and could you prove a specific one was approved?
+37. What happens when a rate fails, and how long until it's resolved?
+38. How many rates do you check per period, and what share fail?
+39. What is the most common error?
+40. Has a bad rate ever gotten through? How was it caught, and what did it cost?
+41. Do you keep a personal spreadsheet, notes, or checklist for this?
+
+**Both integrations**
+42. What part of this would you most like to never do again?
+43. What would you never want a machine to decide here?
+44. Can I sit with you while you do a batch?
+
+## Requirements: what must be true afterward
+
+**Both integrations**
+1. Who is the sponsor, and who settles trade-offs when stakeholders disagree?
+2. Who signs off that it's done?
+3. Which clients, programs, countries, and VMS platforms come first?
+4. What is explicitly out of scope?
+5. What is the smallest version that would still be valuable?
+6. What volumes and processing times must it handle?
+7. What audit evidence must exist afterward?
+8. Is Workato a given? Are paid verification or data services in budget?
+9. Which other teams or systems must change, and are they committed?
+10. Who supports it after launch, and who maintains the reference data and configuration?
+11. How often will the business rules change, and who changes them?
+
+**Vendor master data**
+12. Which system is the system of record for supplier identity: the client ERP, the VMS, or REDACTED?
+13. Is this one-time onboarding, or ongoing maintenance of a living record?
+14. Is a supplier collected once across clients or separately per program, and do client contracts allow sharing?
+15. Which fields are required, and which downstream consumer needs each one?
+16. What do the key terms mean: supplier vs. vendor, client vs. program, active, approved?
+17. Who is responsible for verifying bank details, tax IDs, and sanctions status?
+18. What approval must a bank detail change pass before it takes effect?
+19. Must the account holder name, as the bank holds it, be captured separately from the legal entity name?
+20. Has the privacy office been engaged? Is a DPIA needed? Are there residency or retention requirements?
+21. Which supplier types and languages must be supported?
+22. How will existing suppliers be migrated?
+23. Does the program's funding model require us to hold banking data at all?
+
+**Rate validation**
+24. Who owns the rate rules and tolerances?
+25. For each rule, what should a failure do: reject, warn, or route to an analyst?
+26. How must rate exceptions be approved and recorded so they can be validated against?
+27. Where will the reference data come from, and who keeps it current?
+28. Should rates be compared gross or net of the MSP fee?
+29. What standard working day applies per program for converting between daily and hourly rates?
+30. Which legal floors are in scope to validate, and which are flagged for human review?
+31. Who may see pay rates and supplier markups?
+32. Which decisions must always stay with an analyst?
+
+I can also put this into a doc you can share with stakeholders or use as an interview guide.
