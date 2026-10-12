@@ -1,0 +1,17 @@
+{
+  "name": "PROJECT_NAME",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "open": "clasp open",
+    "logs": "clasp logs",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2",
+    "@types/google-apps-script": "^1",
+    "eslint": "^9"
+  }
+}

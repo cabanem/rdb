@@ -1,0 +1,38 @@
+# devkit bashrc — sourced from ~/.bashrc (bootstrap.sh adds the line). Git Bash on Windows.
+# Rule of thumb: tools are global (here), dependencies are local (in each repo).
+
+export DEV_ROOT=/d/dev
+export PATH="$HOME/scoop/shims:$HOME/.local/bin:$PATH"
+
+# --- Zscaler ---------------------------------------------------------------
+# One exported root cert, several consumers. Paths must be Windows-style (C:/...) because
+# the programs reading these variables are native Windows binaries, not MSYS ones.
+CERTS="$(cygpath -m "$HOME/.certs")"
+if [ -f "$CERTS/zscaler.pem" ]; then
+  export NODE_EXTRA_CA_CERTS="$CERTS/zscaler.pem"     # Node, clasp, Claude Code  (takes extras only)
+  export SSL_CERT_FILE="$CERTS/ca-bundle.pem"         # Python ssl, pip           (takes ONE full bundle)
+  export REQUESTS_CA_BUNDLE="$CERTS/ca-bundle.pem"    # requests, google-auth, google-cloud-*
+  export CURL_CA_BUNDLE="$CERTS/ca-bundle.pem"        # curl in Git Bash
+  export AWS_CA_BUNDLE="$CERTS/ca-bundle.pem"         # aws cli / boto3
+  export UV_NATIVE_TLS=1                              # uv: just use the Windows store
+fi
+unset CERTS
+
+# --- Node (fnm switches versions on cd, driven by .node-version) -------------
+command -v fnm >/dev/null 2>&1 && eval "$(fnm env --use-on-cd --shell bash)"
+
+# --- Claude Code via Bedrock ------------------------------------------------
+export CLAUDE_CODE_USE_BEDROCK=1
+export AWS_REGION=us-east-1                 # confirm with platform team
+# export ANTHROPIC_MODEL=us.anthropic.claude-...   # only if they hand you a specific inference profile
+# Credentials: never static keys here. SSO/Idira-vended sessions refresh via
+# awsAuthRefresh in ~/.claude/settings.json — see https://code.claude.com/docs/en/amazon-bedrock
+
+# --- Python -----------------------------------------------------------------
+export PYTHONUTF8=1                          # stop cp1252 surprises when writing text files
+alias py='uv run python'                     # always the project's venv, never system 3.12
+
+# --- Navigation -------------------------------------------------------------
+dev() { cd "$DEV_ROOT/${1:-}" && ls; }       # dev work/sdc-tools
+alias ll='ls -la'
+alias gs='git status -sb'
