@@ -1,0 +1,21 @@
+export TGT=https://www.workato.com/api
+export TGT_TOKEN=<target workspace token>
+alias wt='curl -sS -H "Authorization: Bearer $TGT_TOKEN" -H "Content-Type: application/json"'
+
+# 1. Resolve the project's top-level folder
+FOLDER=$(wt "$TGT/projects?per_page=100" | jq -r '.[] | select(.name=="Randstad DataBridge") | .folder_id')
+
+# 2. Preview what the manifest will carry
+wt "$TGT/export_manifests/folder_assets?folder_id=$FOLDER" \
+  | jq '.result.assets | {total: length, changed: map(select(.status!="no change")) | length, types: group_by(.type) | map({(.[0].type): length}) | add}'
+
+# 3. Create the manifest (auto-generated asset list)
+MANIFEST=$(wt -X POST $TGT/export_manifests -d '{"export_manifest":{
+  "name":"databridge-snapshot","folder_id":'$FOLDER',
+  "auto_generate_assets":true,"include_tags":false,"include_test_cases":false,"include_data":false}}' \
+  | jq -r '.result.id')
+
+# 4. Build, poll, download
+PKG=$(wt -X POST $TGT/packages/export/$MANIFEST -d '{}' | jq -r .id)
+until [ "$(wt $TGT/packages/$PKG | jq -r .status)" = "completed" ]; do sleep 10; done
+curl -sS -H 'Accept: */*' "$(wt $TGT/packages/$PKG | jq -r .download_url)" -o databridge.zip
