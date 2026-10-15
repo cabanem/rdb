@@ -32,9 +32,12 @@
  *   A5  Key | Name | Label | Type | Length | Scale | Precision | Controller | Values
  *   A6+ one row per createable field; Values is JSON [{value,label,valid_for[]}] or blank
  *
- * WIRING (two one-liners elsewhere)
- *   ConfigTools.gs onOpen():  .addItem('Refresh field schema', 'refreshSchema')
- *   ContractIntake.gs setupTriggers():  setupSchemaTrigger();
+ * WIRING
+ *   Dashboard: the Settings drawer shows schema status and a "Refresh now" button. getConfigForEdit() adds
+ *     `schema: schemaStatus_()` to what it returns; the button calls refreshSchemaFromDashboard(), gated by the
+ *     same config_allowed_emails rule as a config save. (The sheet menu in ConfigTools is not the route; the team
+ *     works from the dashboard.)
+ *   ContractIntake.gs setupTriggers():  setupSchemaTrigger();   // daily refresh
  *
  * DEPLOY: clasp push. Add Config key workato_schema_url (locked; the endpoint's full URL without the query string).
  */
@@ -86,10 +89,21 @@ const SCHEMA_REFRESH_HOUR = 6;
 
 // --- REFRESH (menu / trigger) ---------------------------------------------------------------
 /**
- * Fetch the field schema from Workato and rewrite the `_schema` tab. Safe to run any time; on any failure nothing is
- * written and the previous tab stands. Logs a summary, warns about labels that do not join, and shows a one-line
- * result when a UI exists.
- * @return {number} Fields written.
+ * Summary of one refresh, also what the dashboard shows. Primitives only (google.script.run cannot carry Dates).
+ * @typedef {Object} SchemaSummary
+ * @property {number}   fields          Fields written.
+ * @property {string}   fetchedAt       ISO timestamp.
+ * @property {string[]} unmatchedConfig Config labels with no Salesforce field.
+ * @property {string[]} unmatchedSf     Salesforce fields with no Config label.
+ * @property {string[]} collisions      Salesforce labels that collapse to one wire key.
+ * @property {string}   message         One line, human-readable.
+ */
+
+/**
+ * Fetch the field schema from Workato and rewrite the `_schema` tab. Safe to run any time (trigger, dashboard, or
+ * the editor); on any failure nothing is written and the previous tab stands. Logs a summary and warns about labels
+ * that do not join.
+ * @return {SchemaSummary}
  */
 function refreshSchema() {
   const cfg = readConfig_();
@@ -100,19 +114,51 @@ function refreshSchema() {
   const keys = built.rows.map(function (r) { return r[0]; });
   const rec = reconcileSchema_(keys, cfg.output_fields);   // {unmatchedConfig, unmatchedSf}
 
-  writeSchemaTab_(built.rows, rec);
+  const fetchedAt = writeSchemaTab_(built.rows, rec);
 
-  let summary = built.rows.length + ' fields written to ' + SCHEMA_SHEET_NAME + '.';
+  let message = built.rows.length + ' fields cached.';
   if (rec.unmatchedConfig.length) {
-    summary += ' ' + rec.unmatchedConfig.length + ' Config label(s) have no Salesforce field: ' + rec.unmatchedConfig.join(', ') + '.';
+    message += ' ' + rec.unmatchedConfig.length + ' Config label(s) have no Salesforce field: ' + rec.unmatchedConfig.join(', ') + '.';
     logWarn_('refreshSchema', 'Config labels not in Salesforce', corr, rec.unmatchedConfig.join(', '));
   }
   if (built.collisions.length) {
     logWarn_('refreshSchema', 'Salesforce labels collide on wire key (first kept)', corr, built.collisions.join(', '));
   }
-  logInfo_('refreshSchema', summary, corr);
-  try { SpreadsheetApp.getUi().alert('Contract Intake', summary, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) { /* no UI */ }
-  return built.rows.length;
+  logInfo_('refreshSchema', message, corr);
+  return {
+    fields: built.rows.length, fetchedAt: fetchedAt, unmatchedConfig: rec.unmatchedConfig,
+    unmatchedSf: rec.unmatchedSf, collisions: built.collisions, message: message
+  };
+}
+
+/**
+ * Dashboard endpoint: refresh on demand from the Settings drawer. Gated exactly like a config save — the web app
+ * runs as the deployer, so without the gate anyone who can open the page could hit the Workato endpoint as them.
+ * Returns primitives only. Errors propagate to the page's failure handler as a message.
+ * @return {SchemaSummary}
+ */
+function refreshSchemaFromDashboard() {
+  assertConfigEditAllowed_(viewerEmail_(), currentConfigAllowList_(), emailOf_(function () { return Session.getEffectiveUser(); }));
+  return refreshSchema();
+}
+
+/**
+ * What the drawer shows on open: when the cache was last refreshed and whether every Config label joins. Reads the
+ * tab's metadata rows only; never fetches.
+ * @return {{fetchedAt:string, fields:number, unmatchedConfig:string[], unmatchedSf:string[]}}
+ * @private
+ */
+function schemaStatus_() {
+  const sheet = getConfigSpreadsheet_().getSheetByName(SCHEMA_SHEET_NAME);
+  if (!sheet) return { fetchedAt: '', fields: 0, unmatchedConfig: [], unmatchedSf: [] };
+  const meta = sheet.getRange(1, 2, SCHEMA_HEADER_ROW - 2, 1).getValues();
+  const at = meta[SCHEMA_META.FETCHED.row - 1][0];
+  return {
+    fetchedAt: at instanceof Date ? at.toISOString() : str_(at),
+    fields: Math.max(sheet.getLastRow() - SCHEMA_HEADER_ROW, 0),
+    unmatchedConfig: parseList_(meta[SCHEMA_META.UNMATCHED_CONFIG.row - 1][0]),
+    unmatchedSf: parseList_(meta[SCHEMA_META.UNMATCHED_SF.row - 1][0])
+  };
 }
 
 /**
@@ -287,7 +333,7 @@ function num_(v) {
  * Clear and rewrite the `_schema` tab: metadata block, header, rows. Creates the tab if missing.
  * @param {Array<Array<*>>} rows From schemaRows_().
  * @param {{unmatchedConfig:string[], unmatchedSf:string[]}} rec From reconcileSchema_().
- * @return {void}
+ * @return {string} The ISO timestamp written to the Fetched at cell.
  * @private
  */
 function writeSchemaTab_(rows, rec) {
@@ -299,7 +345,8 @@ function writeSchemaTab_(rows, rec) {
   Object.keys(SCHEMA_META).forEach(function (k) {
     sheet.getRange(SCHEMA_META[k].row, 1).setValue(SCHEMA_META[k].label).setFontWeight('bold');
   });
-  sheet.getRange(SCHEMA_META.FETCHED.row, 2).setValue(new Date().toISOString());
+  const fetchedAt = new Date().toISOString();
+  sheet.getRange(SCHEMA_META.FETCHED.row, 2).setValue(fetchedAt);
   sheet.getRange(SCHEMA_META.UNMATCHED_CONFIG.row, 2).setValue(rec.unmatchedConfig.join(', '));
   sheet.getRange(SCHEMA_META.UNMATCHED_SF.row, 2).setValue(rec.unmatchedSf.join(', '));
 
@@ -308,6 +355,7 @@ function writeSchemaTab_(rows, rec) {
   sheet.setFrozenRows(SCHEMA_HEADER_ROW);
   sheet.autoResizeColumns(1, SCHEMA_HEADERS.length - 1);   // leave Values at default width; it is JSON
   SpreadsheetApp.flush();
+  return fetchedAt;
 }
 
 /**
