@@ -34,9 +34,9 @@
  *
  * WIRING
  *   Dashboard: the Settings drawer shows schema status and a "Refresh now" button. getConfigForEdit() adds
- *     `schema: schemaStatus_()` to what it returns; the button calls refreshSchemaFromDashboard(), gated by the
- *     same config_allowed_emails rule as a config save. (The sheet menu in ConfigTools is not the route; the team
- *     works from the dashboard.)
+ *     `fieldSchema: schemaStatus_()` to what it returns (the key `schema` is already taken by CONFIG_SCHEMA, the
+ *     form definition); the button calls refreshSchemaFromDashboard(), gated by the same config_allowed_emails rule
+ *     as a config save. (The sheet menu in ConfigTools is not the route; the team works from the dashboard.)
  *   ContractIntake.gs setupTriggers():  setupSchemaTrigger();   // daily refresh
  *
  * DEPLOY: clasp push. Add Config key workato_schema_url (locked; the endpoint's full URL without the query string).
