@@ -1,0 +1,111 @@
+/**
+ * @fileoverview WorkatoPush.gs — push to the Workato API endpoint using
+ * Workato's native Auth Token method.
+ *
+ * Auth model: the access-profile token is sent in the `api-token` header, and
+ * Workato's API gate matches it to the access profile BEFORE the recipe runs.
+ * No HMAC, no timestamps, no signing. The platform owns authentication, and
+ * rotation is the Refresh button on the Clients page plus one Script Property
+ * update — no dual-accept window, no recipe formula.
+ *
+ * The token lives in Script Property WORKATO_WEBHOOK_SECRET. The property NAME
+ * is kept for continuity; its VALUE is now the Workato Auth Token shown once
+ * when the access profile was created — not an openssl-generated HMAC secret.
+ *
+ * Retired from the previous version: signPush_, the X-Timestamp and X-Signature
+ * headers, and the HMAC verification branch inside the recipe.
+ */
+
+/** @const {string} Script Property holding the Workato Auth Token. */
+const WORKATO_SECRET_PROP = 'WORKATO_WEBHOOK_SECRET';
+/** @const {string} The header Workato's Auth Token method reads. */
+const WORKATO_TOKEN_HEADER = 'api-token';
+
+/**
+ * The Workato Auth Token from Script Properties.
+ * @return {string}
+ * @throws {Error} If the property is unset.
+ * @private
+ */
+function workatoSecret_() {
+  const s = PropertiesService.getScriptProperties().getProperty(WORKATO_SECRET_PROP);
+  if (!s) throw new Error('Script Property ' + WORKATO_SECRET_PROP + ' is not set.');
+  return s;
+}
+
+/**
+ * Request headers for one push: the auth token plus a correlation id for
+ * Workato job search. The body's correlation_id remains authoritative.
+ * @param {string} correlationId
+ * @return {Object.<string,string>}
+ * @private
+ */
+function workatoHeaders_(correlationId) {
+  const h = { 'X-Correlation-Id': correlationId };
+  h[WORKATO_TOKEN_HEADER] = workatoSecret_();
+  return h;
+}
+
+/**
+ * Raw POST to Workato. Returns status + body and never throws on HTTP status
+ * (only on transport failure), so callers and tests can inspect any outcome.
+ * @param {string} url
+ * @param {Object} payload JSON-serializable body.
+ * @param {Object.<string,string>} headers
+ * @return {{code:number, body:string}}
+ * @private
+ */
+function sendToWorkato_(url, payload, headers) {
+  const resp = UrlFetchApp.fetch(url, {
+    method: 'post', contentType: 'application/json',
+    headers: headers, payload: JSON.stringify(payload), muteHttpExceptions: true
+  });
+  return { code: resp.getResponseCode(), body: resp.getContentText() };
+}
+
+/**
+ * Lowercase-hex HMAC-SHA256 of "<correlationId>.<timestamp>".
+ * @param {string} secret Shared secret.
+ * @param {string} correlationId
+ * @param {string} timestamp Epoch milliseconds as a string.
+ * @return {string} 64-character lowercase hex.
+ * @private
+ */
+function signPush_(secret, correlationId, timestamp) {
+  const canonical = correlationId + '.' + timestamp;
+  const raw = Utilities.computeHmacSha256Signature(canonical, secret);
+  // The bytes are SIGNED — mask each one or negative values corrupt the hex.
+  return raw.map(function (b) { return ('0' + (b & 0xFF).toString(16)).slice(-2); }).join('');
+}
+
+/**
+ * Production push: send, throw on non-2xx so the sheet stays in pending.
+ * @param {Approval} approval
+ * @param {Config} cfg
+ * @param {Object.<string,*>} [typedFields] Label -> typed value from the gate (Gate.gs). Omit to send raw cells.
+ * @throws {Error} On any non-2xx response, with the recipe's own message when the body carries one.
+ * @private
+ */
+function pushToWorkato_(approval, cfg, typedFields) {
+  const r = sendToWorkato_(cfg.workato_webhook_url, buildPayload_(approval, cfg, typedFields),
+    workatoHeaders_(approval.correlationId));
+  if (r.code < 200 || r.code >= 300) throw new Error(workatoErrorText_(r.code, r.body));
+}
+
+/**
+ * One line for the Last error cell from a non-2xx response. Prefers the recipe's structured body — `message`
+ * (the Salesforce or catch message first, per the recipe's response design) and `field` when it names one — and
+ * falls back to the raw body, truncated. Pure.
+ * @param {number} code
+ * @param {string} body
+ * @return {string}
+ * @private
+ */
+function workatoErrorText_(code, body) {
+  let json = null;
+  try { json = JSON.parse(body); } catch (e) { /* not JSON */ }
+  if (json && json.message) {
+    return 'Workato ' + code + ': ' + (json.field ? json.field + ' — ' : '') + String(json.message).slice(0, 400);
+  }
+  return 'Workato ' + code + ': ' + String(body || '').slice(0, 300);
+}
