@@ -1,0 +1,18 @@
+Read TODO.md fully before doing anything. We are doing Phase 1 only in this session: reorganize the Apps Script project into definitions/ adapters/ pipeline/ entrypoints/ tests/ with zero behavior change. Phases 2+ are out of scope today even where they look easy.
+
+Ground rules:
+- Moves and renames only. Do not rewrite function bodies, change signatures, or "improve" logic while moving it. If something looks wrong, note it in a NOTES.md at the end; do not fix it.
+- Trigger handler names (processIngestion, processApprovals, refreshSchema) and every function Dashboard.html calls via google.script.run keep their exact names.
+- Dependency rule: definitions ← adapters ← pipeline ← entrypoints. No Drive/Sheets/Docs calls in adapters/Extractor.gs.
+- Keep every top-level const a literal; nothing at file top level may reference another file's symbol (Apps Script load order is not guaranteed).
+- Normalize all files to LF.
+- .clasp.json already has skipSubdirectories: false; do not add filePushOrder.
+
+Work in this order:
+1. Inventory: list every top-level function and const per file with its destination from the TODO map. Show me that table and stop. I will confirm before any file moves.
+2. After I confirm: do the dead-code removals and the debugPicker dedupe as one commit.
+3. Then the moves, one layer per commit (definitions, adapters, pipeline, entrypoints, tests), updating Tests.js references as you go.
+4. Then the header/README consolidation.
+5. Finish with: a dependency check (grep each layer for calls into the layer above it, report violations), and the exact clasp push + runTests + manual end-to-end steps for Checkpoint 1. Do not run clasp push yourself.
+
+I use Git Bash on Windows; prefer commands that work there. Ask before any step you are unsure how to map.
