@@ -31,10 +31,10 @@ Trigger handler names (`processIngestion`, `processApprovals`, `refreshSchema`) 
 
 - [ ] Mint `correlation_id` at the top of the per-file loop in `runIngestion_` (`Utilities.getUuid()`); pass it to `extractOneFile_`, `extractContract_`, `createReviewSheet_` (remove the mint there), and to `logError_` in the extract-failure catch.
 - [ ] `extractContract_(doc, cfg, corr, deps)` → `{fields, raw:{text, sources, debug}, meta:{model, location, correlation_id}}`. `deps` defaults to `{getToken: extractor_getToken_, send: extractor_send_}`. `Intake` calls only this.
-- [ ] Split `callGemini_` into: `extractor_buildRequest_(doc, cfg, prompt)` (pure; `{url, body, headers}` without Authorization; turns `doc` into `parts`; adds `x-goog-user-project: cfg.project_id`), `extractor_getToken_(cfg)` (returns `ScriptApp.getOAuthToken()` for now), `extractor_send_(req, token, corr)` (the only `UrlFetchApp` in the file; adds `Authorization` and `X-Correlation-Id`), `extractor_interpret_` (= today's `interpretGeminiResponse_`, renamed, keep old name as alias until tests move).
+- [ ] Split `callGemini_` into: `extractor_buildRequest_(doc, cfg, prompt)` (pure; `{url, body, headers}` without Authorization; turns `doc` into `parts`; no quota header — the spike's Vertex calls succeeded without it under both tokens), `extractor_getToken_(cfg)` (returns `ScriptApp.getOAuthToken()` for now), `extractor_send_(req, token, corr)` (the only `UrlFetchApp` in the file; adds `Authorization` and `X-Correlation-Id`), `extractor_interpret_` (= today's `interpretGeminiResponse_`, renamed, keep old name as alias until tests move).
 - [ ] `readContractDoc_(file)` returns `{name, mimeType, text}` or `{name, mimeType, bytes}`; size cap stays here. Word conversion stays here.
 - [ ] `listPublisherModels_` uses `extractor_getToken_(cfg)`.
-- [ ] Error shape: in `adapters/Logging.gs` add `pipelineError_(stage, status, message, corr, retryable)` → `Error` with those props, and `errorShape_(err)` → `{stage, status, retryable, message, correlation_id}` (regex fallback = today's `classifyError_`). Stages: `read | vertex_token | vertex | parse | sheet | gate | workato`.
+- [ ] Error shape: in `adapters/Logging.gs` add `pipelineError_(stage, status, message, corr, retryable)` → `Error` with those props, and `errorShape_(err)` → `{stage, status, retryable, message, correlation_id}` (classify by Google's `error.details[].reason` — `SERVICE_DISABLED`, `USER_PROJECT_DENIED`, `IAM_PERMISSION_DENIED` — before any regex; regex fallback = today's `classifyError_`). Stages: `read | vertex_token | vertex | parse | sheet | gate | workato`.
 - [ ] Throw `pipelineError_` from `extractor_send_`/`extractor_interpret_` (stage `vertex`), `readContractDoc_` (`read`), `validateApproval_` caller (`gate`), `pushToWorkato_` (`workato`, status = HTTP code, retryable = 429/5xx).
 - [ ] Consume it: `markError_`, `queueRow_`, `logError_` details (include stage/status), `classifyError_` prefers `err.stage/retryable` when present.
 - [ ] Opt-in behavior change (do last, separately): in `runIngestion_`, if `errorShape_(err).retryable`, leave the file in Intake and log WARN instead of moving to Failed.
@@ -43,23 +43,23 @@ Trigger handler names (`processIngestion`, `processApprovals`, `refreshSchema`) 
 ## Phase 3 — tests
 
 - [ ] `tests/Fixtures.gs`: one real `generateContent` response (contract text redacted) as `FIXTURE_VERTEX_OK`; one 429 and one SAFETY response.
-- [ ] Tests: `extractor_buildRequest_` shape (PDF inline vs text; grounding on/off; system instruction; quota header), `extractor_interpret_` against each fixture, `extractContract_` with `deps` stubbed (`send` returns fixture, `getToken` returns `'t'`), `errorShape_` on a `pipelineError_` and on a plain `Error`.
+- [ ] Tests: `extractor_buildRequest_` shape (PDF inline vs text; grounding on/off; system instruction; no quota header), `extractor_interpret_` against each fixture, `extractContract_` with `deps` stubbed (`send` returns fixture, `getToken` returns `'t'`), `errorShape_` on a `pipelineError_` and on a plain `Error`.
 - [ ] Register in `runTests()`.
 
-## Phase 5 — service-account identity (after the human GCP spike, Phase 4)
+## Phase 5 — service-account identity (spike verdict B: impersonation works, mint call needs `x-goog-user-project`)
 
 - [ ] Config keys `vertex_auth` (`runner` | `impersonate`; empty → `runner`) and `vertex_sa_email`: `parseConfig_`, Config typedef, `LOCKED_KEYS`, `CONFIG_SCHEMA` Model group. Validation: `impersonate` requires `vertex_sa_email`.
-- [ ] `extractor_getToken_(cfg)`: `impersonate` branch POSTs `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/<sa>:generateAccessToken` with the runner token, body `{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}`, header `x-goog-user-project: cfg.project_id` (only if the spike needed it); cache in `CacheService.getScriptCache()` key `vertex_token:<sa>` TTL 3300 s; failure throws stage `vertex_token`.
+- [ ] `extractor_getToken_(cfg)`: `impersonate` branch POSTs `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/<sa>:generateAccessToken` with the runner token, body `{scope:["https://www.googleapis.com/auth/cloud-platform"], lifetime:"3600s"}`, header `x-goog-user-project: cfg.project_id` on the mint call (required; the Vertex call itself needs no header); cache in `CacheService.getScriptCache()` key `vertex_token:<sa>` TTL 3300 s; failure throws stage `vertex_token`.
 - [ ] On a 401 from Vertex with `impersonate`: evict cache, re-mint once, then fail.
-- [ ] Tests: token branch selection with a stubbed minter; cache hit/miss.
+- [ ] Tests: token branch selection with a stubbed minter; mint request shape (URL, header present, scope = cloud-platform only); cache hit/miss; a `USER_PROJECT_DENIED` / `IAM_PERMISSION_DENIED` mint body maps to stage `vertex_token` with that reason in the message.
 - [ ] CHECKPOINT 3: flip one contract via Config; confirm SA in Vertex audit log; force a mint failure and confirm `_logs` shows stage `vertex_token`.
 
 ## Phase 7 — docs (code-adjacent)
 
-- [ ] Update contracts doc: seam interface, error shape, Config identity block, execution vs actor identity.
+- [ ] Update contracts doc: seam interface, error shape, Config identity block, execution vs actor identity. Record the two grants any runner needs (`roles/iam.serviceAccountTokenCreator` on the SA, `roles/serviceusage.serviceUsageConsumer` on the Vertex project), the mint header, and the Cloud Logging queries (Vertex `principalEmail` = SA, `serviceAccountDelegationInfo` = runner).
 - [ ] User guide: schema-driven review sheet (dropdowns, highlighted cells, `;` for multipicklist).
 - [ ] Optional: `approved_by` column filled by the poller from the sheet's revision history at push time.
 
 ## Not Claude Code (human)
 
-Phase 0 manager replies · Phase 4 GCP project/SA/IAM/spike · Phase 6 bot account licensing and ownership transfer (re-run `setupTriggers` as the bot; add yourself to `config_allowed_emails`; verify `/exec` URL, `guide_url`, Chat pin, `PICKER_ALLOWED_ORIGINS`).
+Phase 0 manager replies · Phase 4 done (spike = B) · Phase 6 bot account licensing and ownership transfer (grant the bot Token Creator on the SA and serviceUsageConsumer on the Vertex project, then remove both from you; re-run `setupTriggers` as the bot; add yourself to `config_allowed_emails`; verify `/exec` URL, `guide_url`, Chat pin, `PICKER_ALLOWED_ORIGINS`).
