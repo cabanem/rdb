@@ -65,7 +65,9 @@ function spike() {
   // 4 — whose token is it
   const sti = tokenInfo_(saToken);
   L('4 SA token principal: ' + (sti.email || '(none)') + ' | expires in ' + (sti.expires_in || '?') + 's');
-  if (sti.email !== SPIKE.sa) { L('VERDICT: FIX — minted token is not for ' + SPIKE.sa + '; check SPIKE.sa'); return; }
+  if (String(sti.email || '').toLowerCase() !== SPIKE.sa.toLowerCase()) {
+    L('VERDICT: FIX — tokeninfo reports "' + (sti.email || 'no email') + '", expected ' + SPIKE.sa + ' (mint itself succeeded)'); return;
+  }
 
   // 5 — Vertex as the SA
   const v = vertex_(saToken, null);
@@ -84,7 +86,8 @@ function mint_(runnerToken, extraHeaders) {
   return http_('post',
     'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' + encodeURIComponent(SPIKE.sa) + ':generateAccessToken',
     runnerToken, extraHeaders,
-    { scope: ['https://www.googleapis.com/auth/cloud-platform'], lifetime: '600s' });
+    // userinfo.email is spike-only: it makes tokeninfo report the principal (probe 4). Production mints cloud-platform alone.
+    { scope: ['https://www.googleapis.com/auth/cloud-platform', 'https://www.googleapis.com/auth/userinfo.email'], lifetime: '600s' });
 }
 
 function vertex_(token, extraHeaders) {
