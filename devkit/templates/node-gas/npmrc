@@ -1,0 +1,7 @@
+# Supply-chain hardening. Requires npm >= 11.10 for min-release-age;
+# that floor is enforced by "engines" in package.json + engine-strict below.
+ignore-scripts=true      # no pre/post/install hooks; `npm run <script>` still works
+min-release-age=7        # refuse any package version published < 7 days ago
+save-exact=true          # `npm i <pkg>` writes 1.2.3, not ^1.2.3
+engine-strict=true       # fail install if node/npm don't satisfy "engines"
+fund=false
