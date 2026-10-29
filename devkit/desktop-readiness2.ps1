@@ -24,13 +24,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+trap {  # anything that escapes a check: say exactly where, then stop
+  Write-Host "`nUNHANDLED: $($_.Exception.Message)" -ForegroundColor Red
+  Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+  break
+}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $script:Results = New-Object System.Collections.Generic.List[object]
 $script:IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
                   ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # ---------- reporting ----------------------------------------------------------
-function R([string]$Status, [string]$Detail) { [pscustomobject]@{ Status = $Status; Detail = $Detail } }
+function Verdict([string]$Status, [string]$Detail) { [pscustomobject]@{ Status = $Status; Detail = $Detail } }
 
 function Write-Section([string]$Title) {
   Write-Host ""; Write-Host ("== {0} " -f $Title).PadRight(72, '=') -ForegroundColor Cyan
@@ -39,7 +44,7 @@ function Write-Section([string]$Title) {
 
 function Invoke-Check([string]$Name, [scriptblock]$Body) {
   try   { $r = & $Body }
-  catch { $r = R 'FAIL' ("error: " + $_.Exception.Message) }
+  catch { $r = Verdict 'FAIL' ("error: " + $_.Exception.Message) }
   $color = @{ PASS = 'Green'; WARN = 'Yellow'; FAIL = 'Red'; SKIP = 'DarkGray'; INFO = 'Gray' }[$r.Status]
   Write-Host ("[{0}] " -f $r.Status) -ForegroundColor $color -NoNewline
   Write-Host ("{0,-34} {1}" -f $Name, $r.Detail)
@@ -68,25 +73,30 @@ $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 
 Invoke-Check "Operating system" {
   $build = [int]$os.BuildNumber; $server = ($os.ProductType -ne 1)
-  $d = "$($os.Caption) build $build, $env:PROCESSOR_ARCHITECTURE"
-  if ($build -lt 19041)   { return R 'FAIL' "$d - below Windows 10 2004 (19041) minimum" }
-  if ($server)            { return R 'WARN' "$d - Server SKU; documented support is Win10 19041+/Win11. Code likely fine, Cowork unverified" }
-  R 'PASS' $d
+  $arch = $(if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE })
+  $d = "$($os.Caption) build $build, $arch"
+  if ($build -lt 19041)   { return Verdict 'FAIL' "$d - below Windows 10 2004 (19041) minimum" }
+  if ($server)            { return Verdict 'WARN' "$d - Server SKU; documented support is Win10 19041+/Win11. Code likely fine, Cowork unverified" }
+  Verdict 'PASS' $d
 }
 Invoke-Check "Running as administrator" {
-  if ($script:IsAdmin) { R 'INFO' "yes (MSIX install needs this; service-logon check enabled)" }
-  else                 { R 'INFO' "no - re-run elevated for the service-logon check and to install the .msix" }
+  if ($script:IsAdmin) { Verdict 'INFO' "yes (MSIX install needs this; service-logon check enabled)" }
+  else                 { Verdict 'INFO' "no - re-run elevated for the service-logon check and to install the .msix" }
+}
+Invoke-Check "PowerShell bitness" {
+  if ([IntPtr]::Size -eq 8) { return Verdict 'PASS' "64-bit, $($PSVersionTable.PSVersion)" }
+  Verdict 'WARN' "32-bit PowerShell on this OS - Appx and HKLM policy views differ. Use C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 }
 Invoke-Check "Machine type" {
-  R 'INFO' "$($cs.Manufacturer) $($cs.Model) - HypervisorPresent=$($cs.HypervisorPresent) (True inside any VM; says nothing about nesting)"
+  Verdict 'INFO' "$($cs.Manufacturer) $($cs.Model) - HypervisorPresent=$($cs.HypervisorPresent) (True inside any VM; says nothing about nesting)"
 }
 Invoke-Check "Memory" {
   $gb = [math]::Round($cs.TotalPhysicalMemory / 1GB, 1)
-  if ($gb -lt 16) { R 'WARN' "$gb GB - Cowork runs a VM alongside Automation Anywhere; expect pressure" } else { R 'PASS' "$gb GB" }
+  if ($gb -lt 16) { Verdict 'WARN' "$gb GB - Cowork runs a VM alongside Automation Anywhere; expect pressure" } else { Verdict 'PASS' "$gb GB" }
 }
 Invoke-Check "Free disk (C:)" {
   $free = [math]::Round((Get-PSDrive C).Free / 1GB, 1)
-  if ($free -lt 15) { R 'WARN' "$free GB - offline installer is several GB and unpacks under %LOCALAPPDATA%" } else { R 'PASS' "$free GB" }
+  if ($free -lt 15) { Verdict 'WARN' "$free GB - offline installer is several GB and unpacks under %LOCALAPPDATA%" } else { Verdict 'PASS' "$free GB" }
 }
 
 # ---------- 2. virtualization (Cowork) ------------------------------------------
@@ -98,36 +108,36 @@ Invoke-Check "CPU virtualization extensions" {
   $vmx = [bool]$cpu.VMMonitorModeExtensions; $slat = [bool]$cpu.SecondLevelAddressTranslationExtensions
   $fw  = [bool]$cpu.VirtualizationFirmwareEnabled
   $d = "VMX/SVM=$vmx SLAT=$slat FirmwareEnabled=$fw"
-  if ($vmx -and $slat) { return R 'PASS' $d }
-  if ($vmpOn -and $cs.HypervisorPresent) { return R 'PASS' "$d - flags hidden because a local hypervisor (VMP) is already running" }
-  R 'FAIL' "$d - not exposed to this OS. On a VM this means nested virtualization is off on the host; only the platform team can change that. Cowork will not run; Code still will"
+  if ($vmx -and $slat) { return Verdict 'PASS' $d }
+  if ($vmpOn -and $cs.HypervisorPresent) { return Verdict 'PASS' "$d - flags hidden because a local hypervisor (VMP) is already running" }
+  Verdict 'FAIL' "$d - not exposed to this OS. On a VM this means nested virtualization is off on the host; only the platform team can change that. Cowork will not run; Code still will"
 }
 Invoke-Check "Virtual Machine Platform feature" {
-  if (-not $vmp) { return R 'FAIL' "feature not present on this SKU" }
+  if (-not $vmp) { return Verdict 'FAIL' "feature not present on this SKU" }
   switch ($vmp.InstallState) {
-    1 { R 'PASS' "enabled" }
-    2 { R 'FAIL' "disabled - enable (elevated): Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform" }
-    default { R 'FAIL' "state $($vmp.InstallState) (absent/unknown)" }
+    1 { Verdict 'PASS' "enabled" }
+    2 { Verdict 'FAIL' "disabled - enable (elevated): Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform" }
+    default { Verdict 'FAIL' "state $($vmp.InstallState) (absent/unknown)" }
   }
 }
 Invoke-Check "Related features (info)" {
   $names = 'Microsoft-Hyper-V-All', 'HypervisorPlatform', 'Microsoft-Windows-Subsystem-Linux'
   $f = Get-CimInstance Win32_OptionalFeature | Where-Object { $names -contains $_.Name } |
        ForEach-Object { "{0}={1}" -f $_.Name, @{1='on';2='off'}[[int]$_.InstallState] }
-  R 'INFO' (($f -join ', ') + " (none required)")
+  Verdict 'INFO' (($f -join ', ') + " (none required)")
 }
 Invoke-Check "'Log on as a service' for VM group" {
   # Cowork's VM runs under NT VIRTUAL MACHINE\Virtual Machines (S-1-5-83-0); error 0x80070569 if denied.
-  if (-not $script:IsAdmin) { return R 'SKIP' "needs elevation (secedit). Re-run from an admin PowerShell" }
+  if (-not $script:IsAdmin) { return Verdict 'SKIP' "needs elevation (secedit). Re-run from an admin PowerShell" }
   $inf = Join-Path $env:TEMP 'claude-user-rights.inf'
   $null = & secedit /export /cfg $inf /areas USER_RIGHTS 2>&1
   $lines = Get-Content $inf; Remove-Item $inf -ErrorAction SilentlyContinue
   $grant = $lines | Where-Object { $_ -match '^SeServiceLogonRight' }
   $deny  = $lines | Where-Object { $_ -match '^SeDenyServiceLogonRight' }
-  if ($deny -and $deny -match 'S-1-5-83-0')  { return R 'FAIL' "group is DENIED the right by policy" }
-  if (-not $grant)                            { return R 'PASS' "not defined by policy; local default (includes the group) applies" }
-  if ($grant -match 'S-1-5-83-0')             { return R 'PASS' "granted: $grant" }
-  R 'FAIL' "policy defines the right without the group: $grant"
+  if ($deny -and $deny -match 'S-1-5-83-0')  { return Verdict 'FAIL' "group is DENIED the right by policy" }
+  if (-not $grant)                            { return Verdict 'PASS' "not defined by policy; local default (includes the group) applies" }
+  if ($grant -match 'S-1-5-83-0')             { return Verdict 'PASS' "granted: $grant" }
+  Verdict 'FAIL' "policy defines the right without the group: $grant"
 }
 
 # ---------- 3. install prerequisites --------------------------------------------
@@ -135,39 +145,39 @@ Write-Section "Install prerequisites"
 Invoke-Check "MSIX tooling" {
   $cmd = Get-Command Add-AppxPackage -ErrorAction SilentlyContinue
   $ai  = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue
-  if (-not $cmd) { return R 'FAIL' "Add-AppxPackage not available" }
-  if ($ai) { R 'PASS' "App Installer $($ai.Version) present; Add-AppxPackage available" }
-  else     { R 'WARN' "App Installer absent (common on Server) - install with: Add-AppxPackage .\Claude.msix (elevated)" }
+  if (-not $cmd) { return Verdict 'FAIL' "Add-AppxPackage not available" }
+  if ($ai) { Verdict 'PASS' "App Installer $($ai.Version) present; Add-AppxPackage available" }
+  else     { Verdict 'WARN' "App Installer absent (common on Server) - install with: Add-AppxPackage .\Claude.msix (elevated)" }
 }
 Invoke-Check "Git for Windows (Code needs it)" {
   $g = Get-Command git -ErrorAction SilentlyContinue
-  if ($g) { R 'PASS' ((& git --version) + " at $($g.Source)") } else { R 'FAIL' "git not on PATH for this session" }
+  if ($g) { Verdict 'PASS' ((& git --version) + " at $($g.Source)") } else { Verdict 'FAIL' "git not on PATH for this session" }
 }
 Invoke-Check "Existing Claude Desktop" {
   $pk = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Claude' })
   $dirs = @("$env:LOCALAPPDATA\Claude-3p", "$env:APPDATA\Claude") | Where-Object { Test-Path $_ }
   $d = @(); if ($pk) { $d += ($pk | ForEach-Object { "$($_.Name) $($_.Version)" }) }; if ($dirs) { $d += "data: $($dirs -join ', ')" }
-  if ($d) { R 'INFO' ($d -join '; ') } else { R 'INFO' "none installed (clean slate)" }
+  if ($d) { Verdict 'INFO' ($d -join '; ') } else { Verdict 'INFO' "none installed (clean slate)" }
 }
 Invoke-Check "Claude Desktop policy keys" {
   $hklm = Get-Item 'HKLM:\SOFTWARE\Policies\Claude' -ErrorAction SilentlyContinue
   $hkcu = Get-Item 'HKCU:\SOFTWARE\Policies\Claude' -ErrorAction SilentlyContinue
-  if ($hklm -and $hklm.ValueCount -gt 0) { return R 'WARN' "HKLM has $($hklm.ValueCount) value(s): $($hklm.GetValueNames() -join ', ') - machine policy locks the in-app window and overrides HKCU" }
-  if ($hkcu -and $hkcu.ValueCount -gt 0) { return R 'INFO' "HKCU: $($hkcu.GetValueNames() -join ', ')" }
-  R 'PASS' "none - in-app single-machine configuration will be editable"
+  if ($hklm -and $hklm.ValueCount -gt 0) { return Verdict 'WARN' "HKLM has $($hklm.ValueCount) value(s): $($hklm.GetValueNames() -join ', ') - machine policy locks the in-app window and overrides HKCU" }
+  if ($hkcu -and $hkcu.ValueCount -gt 0) { return Verdict 'INFO' "HKCU: $($hkcu.GetValueNames() -join ', ')" }
+  Verdict 'PASS' "none - in-app single-machine configuration will be editable"
 }
 Invoke-Check "Claude Code CLI (info)" {
   $c = Get-Command claude -ErrorAction SilentlyContinue
   $s = Test-Path "$env:USERPROFILE\.claude\settings.json"
-  R 'INFO' ("cli=" + $(if ($c) { 'found' } else { 'not on PATH' }) + ", ~/.claude/settings.json=" + $s + " (Desktop ignores it; configure Bedrock in-app)")
+  Verdict 'INFO' ("cli=" + $(if ($c) { 'found' } else { 'not on PATH' }) + ", ~/.claude/settings.json=" + $s + " (Desktop ignores it; configure Bedrock in-app)")
 }
 
 # ---------- 4. TLS trust (Zscaler) ------------------------------------------------
 Write-Section "TLS trust (Zscaler)"
 Invoke-Check "Zscaler root in Windows store" {
   $zs = @(Get-ChildItem Cert:\LocalMachine\Root, Cert:\CurrentUser\Root | Where-Object { $_.Subject -match 'Zscaler' })
-  if ($zs) { R 'PASS' "$($zs.Count) found, e.g. $($zs[0].Subject) [$($zs[0].Thumbprint.Substring(0,8))...] - the app itself trusts the OS store" }
-  else     { R 'WARN' "none found under that name - app TLS to Bedrock may fail if Zscaler intercepts" }
+  if ($zs) { Verdict 'PASS' "$($zs.Count) found, e.g. $($zs[0].Subject) [$($zs[0].Thumbprint.Substring(0,8))...] - the app itself trusts the OS store" }
+  else     { Verdict 'WARN' "none found under that name - app TLS to Bedrock may fail if Zscaler intercepts" }
 }
 Invoke-Check "NODE_EXTRA_CA_CERTS (agent)" {
   $u = [Environment]::GetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'User')
@@ -175,24 +185,24 @@ Invoke-Check "NODE_EXTRA_CA_CERTS (agent)" {
   $p = $env:NODE_EXTRA_CA_CERTS
   $persisted = $(if ($u) { $u } else { $m })
   if ($persisted) {
-    if (Test-Path $persisted) { return R 'PASS' "persisted ($persisted) - visible to GUI-launched apps" }
-    return R 'FAIL' "persisted but file missing: $persisted"
+    if (Test-Path $persisted) { return Verdict 'PASS' "persisted ($persisted) - visible to GUI-launched apps" }
+    return Verdict 'FAIL' "persisted but file missing: $persisted"
   }
-  if ($p) { return R 'WARN' "set only for this shell ($p). A Start-menu launch won't see it. Persist: setx NODE_EXTRA_CA_CERTS `"$p`"" }
-  R 'WARN' "not set anywhere - needed if the embedded agent fails TLS behind Zscaler"
+  if ($p) { return Verdict 'WARN' "set only for this shell ($p). A Start-menu launch won't see it. Persist: setx NODE_EXTRA_CA_CERTS `"$p`"" }
+  Verdict 'WARN' "not set anywhere - needed if the embedded agent fails TLS behind Zscaler"
 }
 
 # ---------- 5. AWS ---------------------------------------------------------------
 Write-Section "AWS / Bedrock credentials"
 Invoke-Check "AWS CLI" {
   $a = Get-Command aws -ErrorAction SilentlyContinue
-  if ($a) { R 'PASS' ((& aws --version 2>&1 | Select-Object -First 1)) } else { R 'WARN' "aws not on PATH for this session (in-app sign-in and sts checks use it)" }
+  if ($a) { Verdict 'PASS' ((& aws --version 2>&1 | Select-Object -First 1)) } else { Verdict 'WARN' "aws not on PATH for this session (in-app sign-in and sts checks use it)" }
 }
 Invoke-Check "Profile [$AwsProfile] in ~/.aws" {
   $cred = "$env:USERPROFILE\.aws\credentials"; $conf = "$env:USERPROFILE\.aws\config"
   $inCred = (Test-Path $cred) -and ((Get-Content $cred) -match "^\[$AwsProfile\]")
   $inConf = (Test-Path $conf) -and ((Get-Content $conf) -match "^\[profile $AwsProfile\]")
-  if ($inCred -or $inConf) { R 'PASS' "found (enter '$AwsProfile' as the AWS profile name in-app)" } else { R 'FAIL' "not found in $cred or $conf" }
+  if ($inCred -or $inConf) { Verdict 'PASS' "found (enter '$AwsProfile' as the AWS profile name in-app)" } else { Verdict 'FAIL' "not found in $cred or $conf" }
 }
 
 # ---------- 6. network -----------------------------------------------------------
@@ -202,42 +212,42 @@ Invoke-Check "OS proxy settings" {
   $target = [uri]"https://bedrock-runtime.$Region.amazonaws.com/"
   $via = [Net.WebRequest]::GetSystemWebProxy().GetProxy($target)
   $route = $(if ($via.AbsoluteUri -eq $target.AbsoluteUri) { 'DIRECT' } else { $via.AbsoluteUri })
-  R 'INFO' "ProxyEnable=$($ie.ProxyEnable) ProxyServer='$($ie.ProxyServer)' PAC='$($ie.AutoConfigURL)'; Bedrock resolves to $route (the agent is handed exactly this)"
+  Verdict 'INFO' "ProxyEnable=$($ie.ProxyEnable) ProxyServer='$($ie.ProxyServer)' PAC='$($ie.AutoConfigURL)'; Bedrock resolves to $route (the agent is handed exactly this)"
 }
 
 if ($SkipNetwork) {
-  Invoke-Check "Reachability" { R 'SKIP' "-SkipNetwork" }
+  Invoke-Check "Reachability" { Verdict 'SKIP' "-SkipNetwork" }
 } else {
   Invoke-Check "downloads.claude.ai (offline .msix)" {
     $p = Probe "https://claude.ai/api/desktop/win32/x64/offline/latest/redirect" 0
-    if ($p.Code -in 301, 302, 307, 308) { return R 'PASS' "redirects to $($p.Location)" }
-    if ($p.Code -eq 404) { return R 'WARN' "reachable, but no offline build published right now - retry later" }
-    if ($p.Blocked)      { return R 'FAIL' "blocked by Zscaler (403). Download on the laptop, copy over RDP; set disableAutoUpdates + modelCatalogEnabled=false" }
-    R 'FAIL' "unreachable (HTTP $($p.Code)) $($p.Err) - same workaround: offline installer via laptop + RDP"
+    if ($p.Code -in 301, 302, 307, 308) { return Verdict 'PASS' "redirects to $($p.Location)" }
+    if ($p.Code -eq 404) { return Verdict 'WARN' "reachable, but no offline build published right now - retry later" }
+    if ($p.Blocked)      { return Verdict 'FAIL' "blocked by Zscaler (403). Download on the laptop, copy over RDP; set disableAutoUpdates + modelCatalogEnabled=false" }
+    Verdict 'FAIL' "unreachable (HTTP $($p.Code)) $($p.Err) - same workaround: offline installer via laptop + RDP"
   }
   Invoke-Check "claude.ai" {
     $p = Probe "https://claude.ai/"
-    if ($p.Code -ge 200 -and $p.Code -lt 400) { R 'PASS' "HTTP $($p.Code)" }
-    else { R 'WARN' "HTTP $($p.Code) $($p.Err) - needed only for updates/telemetry; set disableAutoUpdates, disableEssential/NonessentialTelemetry" }
+    if ($p.Code -ge 200 -and $p.Code -lt 400) { Verdict 'PASS' "HTTP $($p.Code)" }
+    else { Verdict 'WARN' "HTTP $($p.Code) $($p.Err) - needed only for updates/telemetry; set disableAutoUpdates, disableEssential/NonessentialTelemetry" }
   }
   Invoke-Check "api.anthropic.com" {
     $p = Probe "https://api.anthropic.com/"
-    if ($p.Code -gt 0 -and -not $p.Blocked) { R 'PASS' "HTTP $($p.Code)" }
-    else { R 'WARN' "HTTP $($p.Code) $($p.Err) - needed only for WebFetch preflight/telemetry; set skipWebFetchPreflight=true" }
+    if ($p.Code -gt 0 -and -not $p.Blocked) { Verdict 'PASS' "HTTP $($p.Code)" }
+    else { Verdict 'WARN' "HTTP $($p.Code) $($p.Err) - needed only for WebFetch preflight/telemetry; set skipWebFetchPreflight=true" }
   }
   foreach ($h in @("bedrock-runtime.$Region.amazonaws.com", "bedrock.$Region.amazonaws.com", "sts.amazonaws.com")) {
     Invoke-Check $h {
       $p = Probe "https://$h/"
-      if ($p.Code -gt 0 -and -not $p.Blocked) { R 'PASS' "TLS ok, HTTP $($p.Code) (4xx is expected without a signed request)" }
-      elseif ($p.Blocked) { R 'FAIL' "blocked by Zscaler (403)" }
-      else { R 'FAIL' "unreachable: $($p.Err)" }
+      if ($p.Code -gt 0 -and -not $p.Blocked) { Verdict 'PASS' "TLS ok, HTTP $($p.Code) (4xx is expected without a signed request)" }
+      elseif ($p.Blocked) { Verdict 'FAIL' "blocked by Zscaler (403)" }
+      else { Verdict 'FAIL' "unreachable: $($p.Err)" }
     }.GetNewClosure()
   }
   Invoke-Check "aws sts get-caller-identity" {
-    if (-not (Get-Command aws -ErrorAction SilentlyContinue)) { return R 'SKIP' "aws not on PATH" }
+    if (-not (Get-Command aws -ErrorAction SilentlyContinue)) { return Verdict 'SKIP' "aws not on PATH" }
     $out = & aws sts get-caller-identity --profile $AwsProfile --output text 2>&1
-    if ($LASTEXITCODE -eq 0) { R 'PASS' ("ARN " + (($out -split "\s+")[1])) }
-    else { R 'FAIL' (($out | Select-Object -First 1) + " (AWS_CA_BUNDLE set? " + [bool]$env:AWS_CA_BUNDLE + ")") }
+    if ($LASTEXITCODE -eq 0) { Verdict 'PASS' ("ARN " + (($out -split "\s+")[1])) }
+    else { Verdict 'FAIL' (($out | Select-Object -First 1) + " (AWS_CA_BUNDLE set? " + [bool]$env:AWS_CA_BUNDLE + ")") }
   }
 }
 
