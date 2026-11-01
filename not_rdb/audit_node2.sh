@@ -3,7 +3,7 @@
 # owns it, audit the ones you own, and (optionally) fix them.
 #
 # Usage (from Git Bash):
-#   ./node-vuln-sweep.sh                      # report only, both drives
+#   ./node-vuln-sweep.sh                      # report only, all mounted drives
 #   ./node-vuln-sweep.sh --fix                # also apply safe fixes to owned trees
 #   ./node-vuln-sweep.sh --pkg lodash         # also list every copy of one package
 #   ./node-vuln-sweep.sh --roots "/d/Users/me /c/Users/me"   # narrow the search
@@ -14,7 +14,10 @@
 
 set -uo pipefail
 
-FIX=0; PKG=""; ROOTS="/c /d"
+# Default roots: every drive Git Bash has mounted (/c, /d, /e ...).
+ROOTS=""
+for d in /?; do [[ -d $d && $d =~ ^/[a-z]$ ]] && ROOTS+="$d "; done
+FIX=0; PKG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --fix)   FIX=1 ;;
