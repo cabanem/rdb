@@ -165,6 +165,7 @@
     var warn = [];
     if (c.settingsError) warn.push(c.settingsError);
     else if (!c.templateConfigured) warn.push('_settings → template.workbookId is blank; creating a workbook will fail until it is set.');
+    if (c.healthAvailable === false) warn.push('050_Health.js is not in the project; Check workbook will fail.');
     if (c.registryMode !== 'live') warn.push('Registry is in dry run: workbooks created here are listed below as unlinked; router actions, claiming and status are unavailable.');
     if (warn.length) { var n = document.getElementById('notice'); n.textContent = warn.join(' '); n.hidden = false; }
     route();
