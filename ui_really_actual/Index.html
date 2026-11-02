@@ -4,39 +4,48 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <base target="_top">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+  /* Brand tokens. Navy is the surface, so the page is dark by design; the
+     OS light/dark setting is deliberately not consulted. */
   :root {
-    --bg: #fbfbf9; --panel: #ffffff; --ink: #1f2328; --muted: #646b73; --line: #dfe2e5;
-    --accent: #0b6e6e; --accent-ink: #ffffff; --warn-bg: #fff6e0; --warn-ink: #6b4a00;
-    --ok: #1d7a3a; --err: #a4232c; --mono: "SF Mono", Consolas, "Liberation Mono", monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { color-scheme: dark;
-      --bg: #15181b; --panel: #1c2024; --ink: #e8eaed; --muted: #9aa3ab; --line: #30363c;
-      --accent: #3fb6b6; --accent-ink: #0d1b1b; --warn-bg: #3a2e10; --warn-ink: #f2d38a; --ok: #5ccf7f; --err: #ff8d93; }
+    color-scheme: dark;
+    --navy: #0F1941;  --yellow: #E6FF00;  --blue: #2175D9;  --paper: #F7F5F0;  --teal: #6BA5B4;
+
+    --bg: var(--navy);
+    --panel: #1A2552;                          /* navy lifted one step: inputs, pre, quiet buttons */
+    --ink: var(--paper);
+    --muted: rgba(247, 245, 240, .68);
+    --line: rgba(247, 245, 240, .16);
+    --accent: var(--yellow); --accent-ink: var(--navy);
+    --link: #7FB1EE;                           /* tint of #2175D9 that passes contrast on navy */
+    --warn-bg: rgba(230, 255, 0, .10); --warn-ink: var(--yellow);
+    --ok: var(--teal);
+    --err: #FF8D93;                            /* not in the palette; kept so failures read as failures */
+    --mono: Consolas, "Liberation Mono", Menlo, monospace;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 Tahoma, Verdana, "Segoe UI", Geneva, sans-serif; }
   main { max-width: 820px; margin: 0 auto; padding: 28px 20px 64px; }
-  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 4px; }
-  h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
-  nav a { color: var(--accent); text-decoration: none; font-weight: 500; margin-left: 18px; }
-  nav a[aria-current] { color: var(--ink); border-bottom: 2px solid var(--accent); }
-  .lede { color: var(--muted); margin: 0 0 20px; }
-  .context { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted);
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 4px;
+    padding-bottom: 10px; border-bottom: 3px solid var(--accent); }
+  h1 { font-size: 23px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+  nav a { color: var(--link); text-decoration: none; font-weight: 700; margin-left: 18px; padding-bottom: 2px; }
+  nav a[aria-current] { color: var(--accent); border-bottom: 2px solid var(--accent); }
+  .lede { color: var(--muted); margin: 12px 0 20px; }
+  .context { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; color: var(--muted);
     padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 24px; }
-  .context b { color: var(--ink); font-weight: 500; }
-  .notice { background: var(--warn-bg); color: var(--warn-ink); padding: 10px 14px; border-radius: 6px; font-size: 13px; margin: -12px 0 20px; }
+  .context b { color: var(--ink); font-weight: 700; }
+  .notice { background: var(--warn-bg); color: var(--warn-ink); border-left: 3px solid var(--accent);
+    padding: 10px 14px; border-radius: 0 4px 4px 0; font-size: 13px; margin: -12px 0 20px; }
   fieldset { border: 0; padding: 0; margin: 0 0 26px; }
-  legend { font-weight: 600; font-size: 15px; padding: 0; margin-bottom: 10px; }
+  legend { font-weight: 700; font-size: 15px; padding: 0; margin-bottom: 10px; color: var(--ink); }
   .field { margin-bottom: 14px; }
-  label { display: block; font-weight: 500; margin-bottom: 4px; }
+  label { display: block; font-weight: 700; margin-bottom: 4px; }
   label small { font-weight: 400; color: var(--muted); margin-left: 6px; }
-  .hint { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .hint { font-size: 12.5px; color: var(--teal); margin-top: 4px; }
   input[type=text], input[type=number], input[type=date], textarea, select {
-    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; }
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); font: inherit; }
+  input::placeholder, textarea::placeholder { color: var(--muted); }
   textarea { min-height: 96px; resize: vertical; }
   input:focus, textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .check { display: flex; align-items: flex-start; gap: 10px; font-weight: 400; }
@@ -44,24 +53,28 @@
   .radios { display: flex; gap: 18px; }
   .actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
   .inline { display: flex; gap: 8px; align-items: center; } .inline input { width: 360px; max-width: 60vw; }
-  button { font: inherit; cursor: pointer; border-radius: 6px; }
-  button.primary { background: var(--accent); color: var(--accent-ink); border: 0; padding: 10px 18px; font-weight: 600; }
+  button { font: inherit; cursor: pointer; border-radius: 4px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border: 0; padding: 10px 18px; font-weight: 700; }
+  button.primary:hover:not([disabled]) { background: #F2FF66; }
   button.quiet { background: var(--panel); color: var(--ink); border: 1px solid var(--line); padding: 5px 10px; font-size: 13px; }
-  button[disabled] { opacity: .55; cursor: default; }
-  .status { color: var(--muted); font-size: 14px; } .status.err { color: var(--err); }
+  button.quiet:hover:not([disabled]) { border-color: var(--blue); background: rgba(33, 117, 217, .22); }
+  button[disabled] { opacity: .5; cursor: default; }
+  .status { color: var(--muted); font-size: 13.5px; } .status.err { color: var(--err); }
   table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 12px; }
   th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { font-weight: 500; color: var(--muted); }
-  td.mono { font-family: var(--mono); white-space: nowrap; }
+  th { font-weight: 700; color: var(--muted); }
+  td.mono { font-family: var(--mono); white-space: nowrap; color: var(--teal); }
   td.acts { white-space: nowrap; } td.acts button { margin-right: 6px; }
   td.err { color: var(--err); max-width: 260px; }
-  .state { display: inline-block; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); font-size: 12px; }
+  td a, .panel a { color: var(--link); }
+  .state { display: inline-block; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); font-size: 12px; }
   .ok { color: var(--ok); } .bad { color: var(--err); }
   .panel { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
   .panel h2 { font-size: 18px; margin: 0 0 6px; } .panel h3 { font-size: 15px; margin: 18px 0 6px; }
-  .panel p { margin: 0 0 10px; } .panel a { color: var(--accent); }
-  pre { font: 12px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; }
-  .empty { color: var(--muted); padding: 24px 0; }
+  .panel p { margin: 0 0 10px; }
+  pre { font: 12px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 10px; overflow-x: auto; color: var(--paper); }
+  .empty { color: var(--muted); padding: 16px 0; }
+  h2.sub { font-size: 16px; font-weight: 700; margin: 28px 0 4px; color: var(--ink); }
 </style>
 </head>
 <body>
@@ -86,6 +99,8 @@
       </form>
     </div>
     <div id="wsTable"></div>
+    <h2 class="sub">Workbooks not yet linked to a workspace</h2>
+    <div id="unclaimedTable"></div>
     <div class="panel" id="detail" hidden></div>
   </section>
 
@@ -111,15 +126,17 @@
       </fieldset>
       <div class="actions">
         <button class="primary" id="create" type="button">Create workbook</button>
+        <button class="quiet" id="createClaim" type="button" hidden>Create and claim a workspace</button>
         <span class="status" id="status"></span>
       </div>
+      <div class="hint">Create workbook generates and fills the configuration only; a workspace can be claimed for it later from the Workspaces view.</div>
     </form>
     <div class="panel" id="result" hidden></div>
   </section>
 </main>
 
 <script>
-  var CTX = null, SCHEMA = null, ROWS = [];
+  var CTX = null, SCHEMA = null, ROWS = [], UNCLAIMED = [];
   var run = function () { return google.script.run.withFailureHandler(function (e) { setListStatus(e && e.message ? e.message : String(e), true); }); };
 
   // ---------- routing ----------
@@ -133,7 +150,7 @@
     document.getElementById('lede').textContent = v === 'new'
       ? 'Creates a configuration workbook from the template with the engagement details filled in. Provisioning is a separate step.'
       : 'Workspaces in the registry, their state, and what the library can tell about each workbook.';
-    if (v === 'list' && !ROWS.length) loadWorkspaces();
+    if (v === 'list' && !ROWS.length && !UNCLAIMED.length) loadWorkspaces();
     if (v === 'new' && !SCHEMA) loadForm();
   }
   window.addEventListener('hashchange', route);
@@ -148,7 +165,7 @@
     var warn = [];
     if (c.settingsError) warn.push(c.settingsError);
     else if (!c.templateConfigured) warn.push('_settings → template.workbookId is blank; creating a workbook will fail until it is set.');
-    if (c.registryMode !== 'live') warn.push('Registry is in dry run: the list shows workbooks created here; router actions and status are unavailable.');
+    if (c.registryMode !== 'live') warn.push('Registry is in dry run: workbooks created here are listed below as unlinked; router actions, claiming and status are unavailable.');
     if (warn.length) { var n = document.getElementById('notice'); n.textContent = warn.join(' '); n.hidden = false; }
     route();
   }).withFailureHandler(function (e) { document.getElementById('context').textContent = e.message; }).getContext();
@@ -165,12 +182,16 @@
 
   function loadWorkspaces() {
     setListStatus('Loading…');
-    run().withSuccessHandler(function (r) { ROWS = r.rows; setListStatus(r.rows.length + ' workspace' + (r.rows.length === 1 ? '' : 's')); renderWorkspaces(); }).listWorkspaces();
+    run().withSuccessHandler(function (r) {
+      ROWS = r.rows; UNCLAIMED = r.unclaimed || [];
+      setListStatus(r.rows.length + ' workspace' + (r.rows.length === 1 ? '' : 's') + ', ' + UNCLAIMED.length + ' unlinked workbook' + (UNCLAIMED.length === 1 ? '' : 's'));
+      renderWorkspaces(); renderUnclaimed();
+    }).listWorkspaces();
   }
 
   function renderWorkspaces() {
     var host = document.getElementById('wsTable');
-    if (!ROWS.length) { host.innerHTML = '<p class="empty">Nothing in the registry' + (CTX.registryMode === 'live' ? '.' : ' yet. Create an implementation to see it here.') + '</p>'; return; }
+    if (!ROWS.length) { host.innerHTML = '<p class="empty">' + (CTX.registryMode === 'live' ? 'Nothing in the registry.' : 'Registry is in dry run; workspaces are not listed.') + '</p>'; return; }
     var cols = COLS.filter(function (c) { return ROWS.some(function (r) { return r[c.k] !== undefined && r[c.k] !== '' && r[c.k] !== null; }); });
     var html = '<table><thead><tr>' + cols.map(function (c) { return '<th>' + esc(c.t) + '</th>'; }).join('') + '<th>Workbook</th><th></th></tr></thead><tbody>';
     ROWS.forEach(function (r, i) {
@@ -191,6 +212,34 @@
     if (c.json)  return '<td>' + esc(typeof v === 'object' ? JSON.stringify(v) : v) + '</td>';
     if (c.date)  return '<td class="mono">' + esc(String(v).slice(0, 16).replace('T', ' ')) + '</td>';
     return '<td class="' + (c.mono ? 'mono' : c.err ? 'err' : '') + '">' + esc(v) + '</td>';
+  }
+
+  function renderUnclaimed() {
+    var host = document.getElementById('unclaimedTable');
+    if (!UNCLAIMED.length) { host.innerHTML = '<p class="empty">Every workbook created here is linked to a workspace.</p>'; return; }
+    var html = '<table><thead><tr><th>Client</th><th>Created</th><th>By</th><th>Workbook</th><th></th></tr></thead><tbody>';
+    UNCLAIMED.forEach(function (r, i) {
+      html += '<tr><td>' + esc(r.client_name) + '</td><td class="mono">' + esc(String(r.created_at).slice(0, 16).replace('T', ' ')) + '</td><td>' + esc(r.created_by) + '</td>' +
+        '<td><a href="' + esc(r.workbook_url) + '">open</a></td><td class="acts">' +
+        '<button class="quiet" data-u="' + i + '" data-act="health">Check workbook</button>' +
+        (CTX.registryMode === 'live' ? '<button class="quiet" data-u="' + i + '" data-act="claim">Claim workspace</button>' : '') +
+        '</td></tr>';
+    });
+    host.innerHTML = html + '</tbody></table>';
+    host.querySelectorAll('button[data-act]').forEach(function (b) { b.addEventListener('click', function (ev) {
+      var r = UNCLAIMED[Number(ev.currentTarget.getAttribute('data-u'))], act = ev.currentTarget.getAttribute('data-act');
+      if (act === 'health') showHealth(r.spreadsheet_id); else claimWorkbook(r.spreadsheet_id, ev.currentTarget);
+    }); });
+  }
+
+  function claimWorkbook(spreadsheetId, btn) {
+    if (!confirm('Claim the first available workspace for this workbook and write its router settings?')) return;
+    if (btn) btn.disabled = true; setListStatus('Claiming…');
+    run().withSuccessHandler(function (res) {
+      setListStatus('Claimed ' + res.workspaceKey + '.');
+      showDetail('Claimed — ' + res.workspaceKey, '<p class="ok">State ' + esc(res.state) + '. Wrote ' + esc((res.written || []).join(', ')) + '.</p>');
+      ROWS = []; UNCLAIMED = []; loadWorkspaces();
+    }).withFailureHandler(function (e) { if (btn) btn.disabled = false; setListStatus(e.message, true); }).claimWorkbook(spreadsheetId);
   }
 
   var CONFIRM = { prepare:  'Deploy the golden estate into this workspace? Runs in the background; use Status to follow it.',
@@ -234,11 +283,17 @@
         }).join('') + '</tbody></table>';
       }
       var pfOk = h.checks.some(function (c) { return c.name === 'preflight' && c.ok; });
+      var bound = h.checks.some(function (c) { return c.name === 'binding' && c.ok; });
+      if (!bound && CTX.registryMode === 'live') {
+        html += '<div class="actions"><button class="quiet" id="claimBtn">Claim workspace</button><span class="status">Binds the first available workspace and writes router.baseUrl / meta.workspace_key.</span></div>';
+      }
       if (CTX.provisionEnabled) {
         html += '<div class="actions"><button class="quiet" id="prov" ' + (pfOk ? '' : 'disabled') + '>Provision (initial)</button>' +
                 '<span class="status">' + (pfOk ? 'Same call as “Start supplier data collection”.' : 'Preflight must pass first.') + '</span></div>';
       }
       showDetail('Workbook check', html);
+      var cb = document.getElementById('claimBtn');
+      if (cb) cb.addEventListener('click', function () { claimWorkbook(h.spreadsheetId, cb); });
       var p = document.getElementById('prov');
       if (p) p.addEventListener('click', function () {
         if (!confirm('Send this configuration to Workato as an initial provision?')) return;
@@ -265,7 +320,8 @@
       var fs = document.createElement('fieldset'); fs.innerHTML = '<legend>' + esc(g.title) + '</legend>';
       g.fields.forEach(function (f) { fs.appendChild(renderField(f)); }); host.appendChild(fs);
     });
-    document.getElementById('create').onclick = submit;
+    document.getElementById('create').onclick = function () { submit(false); };
+    var cc = document.getElementById('createClaim'); cc.hidden = CTX.registryMode !== 'live'; cc.onclick = function () { submit(true); };
   }
   function renderField(f) {
     var wrap = document.createElement('div'); wrap.className = 'field';
@@ -296,7 +352,7 @@
       }).withFailureHandler(function (e) { setStatus(e.message, true); }).getPackQuestions(sel.value);
     };
   }
-  function submit() {
+  function submit(claim) {
     var customer = {};
     SCHEMA.groups.forEach(function (g) { g.fields.forEach(function (f) { var el = document.getElementById(f.key); customer[f.key] = f.input === 'checkbox' ? el.checked : el.value; }); });
     var packId = document.getElementById('packId').value, pack = null;
@@ -304,10 +360,11 @@
       var answers = {}; document.querySelectorAll('#packQuestions input[data-q]').forEach(function (i) { answers[i.getAttribute('data-q')] = i.checked; });
       pack = { fileId: packId, answers: answers, mode: document.querySelector('input[name=mode]:checked').value };
     }
-    var btn = document.getElementById('create'); btn.disabled = true; setStatus('Creating workbook…');
-    google.script.run.withSuccessHandler(function (r) { btn.disabled = false; setStatus('Done.'); ROWS = []; showResult(r); })
-         .withFailureHandler(function (e) { btn.disabled = false; setStatus(e.message, true); })
-         .createImplementation({ customer: customer, pack: pack });
+    var btns = [document.getElementById('create'), document.getElementById('createClaim')];
+    btns.forEach(function (b) { b.disabled = true; }); setStatus(claim ? 'Creating workbook and claiming a workspace…' : 'Creating workbook…');
+    google.script.run.withSuccessHandler(function (r) { btns.forEach(function (b) { b.disabled = false; }); setStatus('Done.'); ROWS = []; UNCLAIMED = []; showResult(r); })
+         .withFailureHandler(function (e) { btns.forEach(function (b) { b.disabled = false; }); setStatus(e.message, true); })
+         .createImplementation({ customer: customer, pack: pack, claim: !!claim });
   }
   function showResult(r) {
     var w = r.workbook, html = '<h2>Created</h2><p><a href="' + esc(w.url) + '">' + esc(w.name) + '</a> <span class="status">· correlation ' + esc(w.correlationId) + '</span></p>';
@@ -318,8 +375,10 @@
     html += '<h3>Read back through Customer.read</h3><pre>' + esc(JSON.stringify(w.readback.values, null, 2)) + '</pre>';
     html += '<h3>Preflight</h3><p class="' + (w.preflight.ok ? 'ok' : 'bad') + '">' + esc(w.preflight.message) + '</p>';
     if (r.pack && r.pack.message) html += '<h3>Field pack</h3><p class="' + (r.pack.applied ? 'ok' : 'bad') + '">' + esc(r.pack.message) + '</p>' + (r.pack.warnings.length ? '<pre>' + esc(r.pack.warnings.join('\n')) + '</pre>' : '');
-    html += '<h3>Registry</h3><p class="' + (r.registry.error ? 'bad' : '') + '">' + esc(r.registry.mode) + ' — ' + esc(r.registry.state) +
-            (r.registry.workspaceKey ? ', workspace ' + esc(r.registry.workspaceKey) : '') + (r.registry.error ? '. ' + esc(r.registry.error) : '') + '</p>';
+    html += '<h3>Workspace</h3><p class="' + (r.registry.error ? 'bad' : '') + '">' +
+            (r.registry.workspaceKey ? 'Linked to ' + esc(r.registry.workspaceKey) + ' (' + esc(r.registry.state) + ').'
+                                     : 'Not linked to a workspace yet; claim one from the Workspaces view when ready.') +
+            (r.registry.error ? ' Claim failed: ' + esc(r.registry.error) : '') + '</p>';
     html += '<p><a href="#list">Back to workspaces</a></p>';
     var el = document.getElementById('result'); el.innerHTML = html; el.hidden = false; el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
