@@ -1,83 +1,156 @@
 /**
- * WebApp — HtmlService entry point and the server calls the page makes. Add to app_sdc-router next to Code.js;
- * its appsscript.json already carries the SDC library and the webapp block (USER_ACCESSING / DOMAIN).
- * Script properties: REGISTRY_MODE (dry_run | live; default dry_run), ALLOW_PROVISION (true to enable).
+ * Registry — two records, kept apart on purpose.
+ *
+ *   workbooks (local tab in the routing workbook)   every config workbook the app generated: who, when, for which
+ *                                                   client, and — once claimed — which workspace. The router has no
+ *                                                   notion of an unclaimed workbook, so this is the only place one
+ *                                                   is remembered. Replaces the earlier demo_registry tab.
+ *   RTR_Pool (router, via SDC.Registry)             workspaces and their state; a workbook appears there only after claim.
+ *
+ * Create and claim are therefore separate actions: create always writes the local ledger; claim (live mode only)
+ * runs the same sequence as "Claim workspace…" in Code.js — claim → applyToWorkbook(full binding) → migrate,
+ * release on failure — and then stamps the ledger row. Everything the router owns goes through readSettings_,
+ * SDC.Registry.* and refreshRegistry_ exactly as the menu does.
+ *
+ * REGISTRY_MODE=dry_run (default): the ledger works; every router call refuses with a plain message.
+ * ACTIONS_BY_STATE decides which buttons the page shows, per the menu items' own explanations; the router is the
+ * authority on legality.
  */
-function doGet() {
-  return HtmlService.createHtmlOutputFromFile('Index').setTitle('SDC – implementations');
-}
+var Registry = (function () {
 
-function getContext() {
-  var p = PropertiesService.getScriptProperties(), settingsError = null, templateConfigured = false;
-  try { templateConfigured = !!readSettings_(SpreadsheetApp.getActiveSpreadsheet()).template.workbookId; }
-  catch (e) { settingsError = e.message; }
-  return {
-    user: Session.getActiveUser().getEmail(),
-    libraryVersion: SDC.Version.LIBRARY, schemaVersion: SDC.Version.SCHEMA,
-    registryMode: Registry.mode(),
-    templateConfigured: templateConfigured, settingsError: settingsError,
-    provisionEnabled: p.getProperty('ALLOW_PROVISION') === 'true'
+  var WORKBOOKS_SHEET = 'workbooks';
+  var LEDGER = ['created_at', 'created_by', 'client_name', 'spreadsheet_id', 'workbook_url', 'correlation_id', 'workspace_key', 'claimed_at'];
+
+  var ACTIONS_BY_STATE = {
+    empty: ['prepare'], failed: ['prepare'],
+    queued: [], deploying: [], configuring: [], registering: [],
+    needs_connections: ['register'],
+    available: [],                    // claim is a workbook-side action (see claim below)
+    bound: ['release'],
+    active: ['close'],
+    inactive: ['release']
   };
-}
 
-// --- Kickoff --------------------------------------------------------------------------------------------------------
-function getFormSchema() { var s = CustomerFields.formSchema(); s.context = getContext(); return s; }
+  function host_() { return SpreadsheetApp.getActiveSpreadsheet(); }
+  function mode()  { return PropertiesService.getScriptProperties().getProperty('REGISTRY_MODE') || 'dry_run'; }
+  function liveOnly_(what) { if (mode() !== 'live') throw new Error(what + ' needs REGISTRY_MODE=live; the registry is in dry run.'); }
 
-/** Packs.list needs a config for storage.packsFolderId; the template's own _developer_settings is the pre-workbook source. */
-function getPacks() {
-  try {
-    var settings = readSettings_(SpreadsheetApp.getActiveSpreadsheet());
-    return SDC.Packs.list(SDC.Config.build(SpreadsheetApp.openById(settings.template.workbookId)));
-  } catch (e) { return []; }
-}
-
-function getPackQuestions(fileId) {
-  var pack = SDC.Packs.read(fileId), seen = {};
-  return pack.questions.filter(function (q) { if (seen[q.question_id]) return false; seen[q.question_id] = true; return true; })
-    .map(function (q) { return { id: q.question_id, prompt: q.prompt, field: q.field, effect: q.effect }; });
-}
-
-/**
- * form = { customer: {...}, pack?: { fileId, answers, mode }, claim?: boolean }
- * Create → pack → record in the ledger → (only when form.claim) claim a workspace. A failed claim keeps the
- * workbook, as "Claim workspace…" keeps a generated one, and the page shows why; the workbook can be claimed later.
- */
-function createImplementation(form) {
-  var cid = SDC.Util.newCorrelationId();
-  var wb = Workbook.create({ customer: form.customer, correlationId: cid });
-
-  var pack = { applied: false };
-  if (form.pack && form.pack.fileId) {
-    var r = SDC.Packs.apply(SpreadsheetApp.openById(wb.spreadsheetId), {
-      fileId: form.pack.fileId, answers: form.pack.answers || {}, scope: null, mode: form.pack.mode || 'standard', replace: true
+  // --- Local ledger ---------------------------------------------------------------------------------------------
+  function ledger_() {
+    var ss = host_(), sh = ss.getSheetByName(WORKBOOKS_SHEET);
+    if (!sh) { sh = ss.insertSheet(WORKBOOKS_SHEET); sh.appendRow(LEDGER); sh.setFrozenRows(1); }
+    return sh;
+  }
+  function ledgerRows_() {
+    var data = ledger_().getDataRange().getValues();
+    return data.slice(1).map(function (r, i) {
+      var o = { _row: i + 2 }; LEDGER.forEach(function (h, k) { o[h] = r[k] instanceof Date ? r[k].toISOString() : r[k]; }); return o;
     });
-    pack = { applied: r.ok, message: r.message, warnings: r.warnings || [], counts: r.data && r.data.counts };
+  }
+  function ledgerFind_(spreadsheetId) {
+    return ledgerRows_().filter(function (r) { return r.spreadsheet_id === spreadsheetId; })[0] || null;
   }
 
-  var reg = Registry.recordCreated({ spreadsheetId: wb.spreadsheetId, url: wb.url, clientName: form.customer.clientName, correlationId: cid });
-  reg.mode = Registry.mode();
-  if (form.claim) {
-    try { Object.assign(reg, Registry.claim(wb.spreadsheetId, cid)); }
-    catch (e) { reg.error = e.message; }
+  /** Called by createImplementation in both modes. Records the workbook; links nothing. */
+  function recordCreated(args) {
+    ledger_().appendRow([new Date().toISOString(), Session.getActiveUser().getEmail(), args.clientName,
+                         args.spreadsheetId, args.url, args.correlationId || '', '', '']);
+    return { state: 'created (not claimed)', workspaceKey: null };
   }
-  return { workbook: wb, pack: pack, registry: reg };
-}
 
-/** Claim a workspace for a workbook created earlier (or any SDC config workbook by URL/ID). Live mode only. */
-function claimWorkbook(spreadsheetId) { return Registry.claim(extractSpreadsheetId_(spreadsheetId)); }
-
-// --- Workspaces -----------------------------------------------------------------------------------------------------
-function listWorkspaces()        { return { mode: Registry.mode(), rows: Registry.list(), unclaimed: Registry.listUnclaimed() }; }
-function getWorkspaceStatus(key) { return Registry.status(key); }
-function workspaceAction(op, key){ return Registry.action(op, key); }
-
-// --- Implementation health ------------------------------------------------------------------------------------------
-function checkImplementation(spreadsheetId) { return Health.check(extractSpreadsheetId_(spreadsheetId)); }
-
-// --- Provision (gated) ----------------------------------------------------------------------------------------------
-function provisionImplementation(spreadsheetId, isInitial) {
-  if (PropertiesService.getScriptProperties().getProperty('ALLOW_PROVISION') !== 'true') {
-    throw new Error('Provisioning from the app is disabled (ALLOW_PROVISION). Use the workbook menu.');
+  /** Workbooks the app generated that no workspace has been claimed for, newest first. */
+  function listUnclaimed() {
+    return ledgerRows_().filter(function (r) { return !r.workspace_key; }).reverse();
   }
-  return SDC.Provision.run(SpreadsheetApp.openById(extractSpreadsheetId_(spreadsheetId)), { isInitial: isInitial !== false });
-}
+
+  // --- Claim: bind a created workbook to the first available workspace -----------------------------------------
+  /**
+   * @param {string} spreadsheetId  a workbook the app created, or any SDC config workbook (then client name is read from 1_customer)
+   * @param {string} [correlationId]
+   */
+  function claim(spreadsheetId, correlationId) {
+    liveOnly_('Claim');
+    var ss = host_(), settings = readSettings_(ss);
+    var cid = correlationId || SDC.Util.newCorrelationId();
+    var log = SDC.Log.forCorrelation(ss, cid);
+
+    var target = SpreadsheetApp.openById(spreadsheetId);
+    if (!target.getSheetByName('_developer_settings')) throw new Error('"' + target.getName() + '" has no _developer_settings tab; it is not an SDC config workbook.');
+    var entry = ledgerFind_(spreadsheetId);
+    var clientName = entry && entry.client_name
+      ? String(entry.client_name)
+      : SDC.Customer.readOne(target, SDC.Config.build(target), 'clientName');
+    if (!clientName) throw new Error('Client name is blank in 1_customer; fill it before claiming.');
+    if (entry && entry.workspace_key) throw new Error('This workbook is already bound to ' + entry.workspace_key + '.');
+
+    var result = SDC.Registry.claim(settings.registry, {
+      clientName: clientName, spreadsheetId: spreadsheetId, workbookUrl: target.getUrl(), correlationId: cid
+    });
+    log('INFO', 'Claimed ' + result.workspace_key + ' for ' + clientName + ' (' + spreadsheetId + ') from the web app.');
+
+    try {
+      var applied = SDC.Registry.applyToWorkbook(target, {
+        routerBaseUrl:           settings.workbook.routerBaseUrl,
+        workspaceKey:            result.workspace_key,
+        integrationAccountEmail: settings.workbook.integrationAccountEmail,
+        configExportFolderId:    settings.workbook.configExportFolderId,
+        authorizedEditors:       settings.workbook.authorizedEditors
+      });
+      if (SDC.Migrations.isMigrationNeeded(target)) {
+        var mig = SDC.Migrations.run(target);
+        if (!mig.ok) throw new Error('Workbook schema migration failed: ' + mig.message);
+      }
+      try { SDC.Log.append(target, 'SUCCESS', 'Bound to workspace ' + result.workspace_key + ' by the implementations app.', cid); } catch (ignore) {}
+      log('SUCCESS', 'Bound ' + result.workspace_key + ' → ' + spreadsheetId + '; wrote ' + applied.written.join(', ') + '.');
+    } catch (e) {
+      log('ERROR', 'Settings write failed after claim; releasing ' + result.workspace_key + ': ' + e.message);
+      var released = true;
+      try { SDC.Registry.release(settings.registry, result.workspace_key, cid); }
+      catch (e2) { released = false; log('ERROR', 'Release after failed claim also failed: ' + e2.message); }
+      refreshRegistry_(ss, settings);
+      throw new Error('Claim rolled back' + (released ? '' : ' (release ALSO failed — check ' + result.workspace_key + ' in the registry)') + ': ' + e.message);
+    }
+
+    // Stamp the ledger: the app's own row if it generated this workbook, otherwise a new row so it is tracked from now on.
+    var sh = ledger_();
+    if (!entry) { recordCreated({ clientName: clientName, spreadsheetId: spreadsheetId, url: target.getUrl(), correlationId: cid }); entry = { _row: sh.getLastRow() }; }
+    sh.getRange(entry._row, LEDGER.indexOf('workspace_key') + 1, 1, 2).setValues([[result.workspace_key, new Date().toISOString()]]);
+    refreshRegistry_(ss, settings);
+    return { state: result.state || 'bound', workspaceKey: result.workspace_key, written: applied.written, correlationId: cid };
+  }
+
+  // --- Router reads -----------------------------------------------------------------------------------------------
+  function list() {
+    if (mode() !== 'live') return [];
+    var rows = SDC.Registry.list(readSettings_(host_()).registry).workspaces || [];
+    return rows.map(function (r) { return Object.assign({}, r, { _actions: ACTIONS_BY_STATE[String(r.state || '')] || [] }); });
+  }
+  function status(workspaceKey) {
+    liveOnly_('Status');
+    return SDC.Registry.status(readSettings_(host_()).registry, workspaceKey);
+  }
+
+  // --- Lifecycle: the same cycle as lifecycleAction_ in Code.js, without the prompts --------------------------------
+  function action(op, workspaceKey) {
+    liveOnly_(op);
+    if (['prepare', 'register', 'release', 'close'].indexOf(op) < 0) throw new Error('Unknown action: ' + op);
+    var ss = host_(), settings = readSettings_(ss);
+    var cid = SDC.Util.newCorrelationId();
+    var log = SDC.Log.forCorrelation(ss, cid);
+    try {
+      var result = SDC.Registry[op](settings.registry, workspaceKey, cid);
+      log('SUCCESS', op + ' ' + workspaceKey + ': ' + JSON.stringify(result).substring(0, 300));
+      if (op === 'release') {   // the binding is gone on the router side; reflect it locally
+        ledgerRows_().filter(function (r) { return r.workspace_key === workspaceKey; })
+          .forEach(function (r) { ledger_().getRange(r._row, LEDGER.indexOf('workspace_key') + 1, 1, 2).setValues([['', '']]); });
+      }
+      refreshRegistry_(ss, settings);
+      return { action: op, workspaceKey: workspaceKey, correlationId: cid, result: result };
+    } catch (e) {
+      log('ERROR', op + ' ' + workspaceKey + ' failed: ' + e.message);
+      throw e;
+    }
+  }
+
+  return { recordCreated: recordCreated, listUnclaimed: listUnclaimed, claim: claim, list: list, status: status, action: action, mode: mode };
+})();
