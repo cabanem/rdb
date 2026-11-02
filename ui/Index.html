@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base target="_top">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fbfbf9; --panel: #ffffff; --ink: #1f2328; --muted: #646b73; --line: #dfe2e5;
+    --accent: #0b6e6e; --accent-ink: #ffffff; --warn-bg: #fff6e0; --warn-ink: #6b4a00;
+    --ok: #1d7a3a; --err: #a4232c; --mono: "SF Mono", Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { color-scheme: dark;
+      --bg: #15181b; --panel: #1c2024; --ink: #e8eaed; --muted: #9aa3ab; --line: #30363c;
+      --accent: #3fb6b6; --accent-ink: #0d1b1b; --warn-bg: #3a2e10; --warn-ink: #f2d38a; --ok: #5ccf7f; --err: #ff8d93; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 620px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; }
+  .lede { color: var(--muted); margin: 0 0 24px; }
+
+  .context { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted);
+    padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 28px; }
+  .context b { color: var(--ink); font-weight: 500; }
+  .notice { background: var(--warn-bg); color: var(--warn-ink); padding: 10px 14px; border-radius: 6px; font-size: 13px; margin: -16px 0 24px; }
+
+  fieldset { border: 0; padding: 0; margin: 0 0 28px; }
+  legend { font-weight: 600; font-size: 15px; padding: 0; margin-bottom: 10px; }
+  .field { margin-bottom: 14px; }
+  label { display: block; font-weight: 500; margin-bottom: 4px; }
+  label small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .hint { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  input[type=text], input[type=number], input[type=date], textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--panel); color: var(--ink); font: inherit; }
+  textarea { min-height: 96px; resize: vertical; }
+  input:focus, textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .check { display: flex; align-items: center; gap: 10px; }
+  .check input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+  .actions { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 6px;
+    padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary[disabled] { opacity: .55; cursor: default; }
+  .status { color: var(--muted); font-size: 14px; }
+  .status.err { color: var(--err); }
+
+  .result { margin-top: 36px; padding-top: 24px; border-top: 1px solid var(--line); }
+  .result h2 { font-size: 18px; margin: 0 0 6px; }
+  .result p { margin: 0 0 12px; }
+  .result a { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0 16px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 500; color: var(--muted); }
+  td.a1 { font-family: var(--mono); white-space: nowrap; }
+  .ok { color: var(--ok); } .bad { color: var(--err); }
+  pre { font: 12px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>New implementation</h1>
+  <p class="lede">Creates a configuration workbook from the base template with the engagement details filled in. Provisioning is a separate step.</p>
+
+  <div class="context" id="context">Loading…</div>
+  <div class="notice" id="notice" hidden></div>
+
+  <form id="form" onsubmit="return false;">
+    <div id="groups"></div>
+
+    <fieldset id="packset" hidden>
+      <legend>Field pack</legend>
+      <div class="field">
+        <label for="packId">Pack <small>optional</small></label>
+        <select id="packId"><option value="">None</option></select>
+        <div class="hint">Applying the pack to 4_fields is not part of this demonstration; the selection is recorded only.</div>
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button class="primary" id="create" type="button">Create workbook</button>
+      <span class="status" id="status"></span>
+    </div>
+  </form>
+
+  <section class="result" id="result" hidden></section>
+</main>
+
+<script>
+  var SCHEMA = null;
+
+  google.script.run.withSuccessHandler(onSchema).withFailureHandler(fail).getFormSchema();
+  google.script.run.withSuccessHandler(onPacks).getPacks();
+
+  function onSchema(s) {
+    SCHEMA = s;
+    var c = s.context;
+    document.getElementById('context').innerHTML =
+      '<span>Signed in as <b>' + esc(c.user) + '</b></span>' +
+      '<span>Field definitions from <b>' + esc(s.source) + '</b> (' + s.fieldCount + ')</span>' +
+      '<span>Registry <b>' + esc(c.registryMode) + '</b></span>';
+
+    var warnings = [];
+    if (!c.libraryAttached)     warnings.push('lib_sdc is not attached to this project — the form is drawn from a fixture and no readback is possible.');
+    if (!c.templateConfigured)  warnings.push('SDC_BASE_TEMPLATE_ID is not set — creating a workbook will fail until it is.');
+    var n = document.getElementById('notice');
+    if (warnings.length) { n.textContent = warnings.join(' '); n.hidden = false; }
+
+    var host = document.getElementById('groups');
+    s.groups.forEach(function (g) {
+      var fs = document.createElement('fieldset');
+      fs.innerHTML = '<legend>' + esc(g.title) + '</legend>';
+      g.fields.forEach(function (f) { fs.appendChild(renderField(f)); });
+      host.appendChild(fs);
+    });
+    document.getElementById('create').addEventListener('click', submit);
+  }
+
+  function renderField(f) {
+    var wrap = document.createElement('div'); wrap.className = 'field';
+    var opt = f.required ? '' : '<small>optional</small>';
+    if (f.input === 'checkbox') {
+      wrap.innerHTML = '<label class="check"><input type="checkbox" id="' + f.key + '"> ' + esc(f.label) + opt + '</label>';
+    } else {
+      var ctl = f.input === 'textarea'
+        ? '<textarea id="' + f.key + '"' + (f.required ? ' required' : '') + '></textarea>'
+        : '<input type="' + f.input + '" id="' + f.key + '"' + (f.required ? ' required' : '') + '>';
+      wrap.innerHTML = '<label for="' + f.key + '">' + esc(f.label) + opt + '</label>' + ctl +
+                       (f.hint ? '<div class="hint">' + esc(f.hint) + '</div>' : '');
+    }
+    return wrap;
+  }
+
+  function onPacks(packs) {
+    if (!packs || !packs.length) return;
+    var sel = document.getElementById('packId');
+    packs.forEach(function (p) { var o = document.createElement('option'); o.value = p.id; o.textContent = p.name; sel.appendChild(o); });
+    document.getElementById('packset').hidden = false;
+  }
+
+  function submit() {
+    var customer = {};
+    SCHEMA.groups.forEach(function (g) { g.fields.forEach(function (f) {
+      var el = document.getElementById(f.key);
+      customer[f.key] = f.input === 'checkbox' ? el.checked : el.value;
+    }); });
+    var btn = document.getElementById('create'); btn.disabled = true;
+    setStatus('Creating workbook…');
+    google.script.run
+      .withSuccessHandler(function (r) { btn.disabled = false; setStatus('Workbook created.'); showResult(r); })
+      .withFailureHandler(function (e) { btn.disabled = false; fail(e); })
+      .createImplementation({ customer: customer, packId: document.getElementById('packId').value });
+  }
+
+  function showResult(r) {
+    var w = r.workbook, rows = '';
+    w.written.forEach(function (x) {
+      rows += '<tr><td>' + esc(x.key) + '</td><td class="a1">' + esc(x.a1) + '</td><td>' + esc(String(x.value)) + '</td></tr>';
+    });
+    var missing = w.missingRanges.length
+      ? '<p class="bad">Named ranges not found in the copy: ' + esc(w.missingRanges.join(', ')) + '. Those values were not written.</p>' : '';
+    var rb = w.readback && w.readback.via === 'SDC.Customer.read'
+      ? (w.readback.error ? '<p class="bad">Readback through the library failed: ' + esc(w.readback.error) + '</p>'
+                          : '<p class="ok">Read back through the library’s own Customer.read:</p><pre>' + esc(JSON.stringify(w.readback.values, null, 2)) + '</pre>')
+      : '<p class="status">' + esc(w.readback.note) + '</p>';
+    document.getElementById('result').innerHTML =
+      '<h2>Created</h2>' +
+      '<p><a href="' + esc(w.url) + '">Open the workbook</a></p>' +
+      '<table><thead><tr><th>Field</th><th>Cell</th><th>Written</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      missing + rb +
+      '<p class="status">Registry: ' + esc(r.registry.mode || 'live') + ' — state “' + esc(r.registry.state || '') + '”. ' + esc(r.pack.note) + '</p>';
+    document.getElementById('result').hidden = false;
+    document.getElementById('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function setStatus(t, isErr) { var s = document.getElementById('status'); s.textContent = t; s.className = 'status' + (isErr ? ' err' : ''); }
+  function fail(e) { setStatus(e && e.message ? e.message : String(e), true); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+</script>
+</body>
+</html>
