@@ -73,7 +73,8 @@
   .panel h2 { font-size: 18px; margin: 0 0 6px; } .panel h3 { font-size: 15px; margin: 18px 0 6px; }
   .panel p { margin: 0 0 10px; }
   pre { font: 12px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 10px; overflow-x: auto; color: var(--paper); }
-  .empty { color: var(--muted); padding: 24px 0; }
+  .empty { color: var(--muted); padding: 16px 0; }
+  h2.sub { font-size: 16px; font-weight: 700; margin: 28px 0 4px; color: var(--ink); }
 </style>
 </head>
 <body>
@@ -98,6 +99,8 @@
       </form>
     </div>
     <div id="wsTable"></div>
+    <h2 class="sub">Workbooks not yet linked to a workspace</h2>
+    <div id="unclaimedTable"></div>
     <div class="panel" id="detail" hidden></div>
   </section>
 
@@ -123,15 +126,17 @@
       </fieldset>
       <div class="actions">
         <button class="primary" id="create" type="button">Create workbook</button>
+        <button class="quiet" id="createClaim" type="button" hidden>Create and claim a workspace</button>
         <span class="status" id="status"></span>
       </div>
+      <div class="hint">Create workbook generates and fills the configuration only; a workspace can be claimed for it later from the Workspaces view.</div>
     </form>
     <div class="panel" id="result" hidden></div>
   </section>
 </main>
 
 <script>
-  var CTX = null, SCHEMA = null, ROWS = [];
+  var CTX = null, SCHEMA = null, ROWS = [], UNCLAIMED = [];
   var run = function () { return google.script.run.withFailureHandler(function (e) { setListStatus(e && e.message ? e.message : String(e), true); }); };
 
   // ---------- routing ----------
@@ -145,7 +150,7 @@
     document.getElementById('lede').textContent = v === 'new'
       ? 'Creates a configuration workbook from the template with the engagement details filled in. Provisioning is a separate step.'
       : 'Workspaces in the registry, their state, and what the library can tell about each workbook.';
-    if (v === 'list' && !ROWS.length) loadWorkspaces();
+    if (v === 'list' && !ROWS.length && !UNCLAIMED.length) loadWorkspaces();
     if (v === 'new' && !SCHEMA) loadForm();
   }
   window.addEventListener('hashchange', route);
@@ -160,7 +165,7 @@
     var warn = [];
     if (c.settingsError) warn.push(c.settingsError);
     else if (!c.templateConfigured) warn.push('_settings → template.workbookId is blank; creating a workbook will fail until it is set.');
-    if (c.registryMode !== 'live') warn.push('Registry is in dry run: the list shows workbooks created here; router actions and status are unavailable.');
+    if (c.registryMode !== 'live') warn.push('Registry is in dry run: workbooks created here are listed below as unlinked; router actions, claiming and status are unavailable.');
     if (warn.length) { var n = document.getElementById('notice'); n.textContent = warn.join(' '); n.hidden = false; }
     route();
   }).withFailureHandler(function (e) { document.getElementById('context').textContent = e.message; }).getContext();
@@ -177,12 +182,16 @@
 
   function loadWorkspaces() {
     setListStatus('Loading…');
-    run().withSuccessHandler(function (r) { ROWS = r.rows; setListStatus(r.rows.length + ' workspace' + (r.rows.length === 1 ? '' : 's')); renderWorkspaces(); }).listWorkspaces();
+    run().withSuccessHandler(function (r) {
+      ROWS = r.rows; UNCLAIMED = r.unclaimed || [];
+      setListStatus(r.rows.length + ' workspace' + (r.rows.length === 1 ? '' : 's') + ', ' + UNCLAIMED.length + ' unlinked workbook' + (UNCLAIMED.length === 1 ? '' : 's'));
+      renderWorkspaces(); renderUnclaimed();
+    }).listWorkspaces();
   }
 
   function renderWorkspaces() {
     var host = document.getElementById('wsTable');
-    if (!ROWS.length) { host.innerHTML = '<p class="empty">Nothing in the registry' + (CTX.registryMode === 'live' ? '.' : ' yet. Create an implementation to see it here.') + '</p>'; return; }
+    if (!ROWS.length) { host.innerHTML = '<p class="empty">' + (CTX.registryMode === 'live' ? 'Nothing in the registry.' : 'Registry is in dry run; workspaces are not listed.') + '</p>'; return; }
     var cols = COLS.filter(function (c) { return ROWS.some(function (r) { return r[c.k] !== undefined && r[c.k] !== '' && r[c.k] !== null; }); });
     var html = '<table><thead><tr>' + cols.map(function (c) { return '<th>' + esc(c.t) + '</th>'; }).join('') + '<th>Workbook</th><th></th></tr></thead><tbody>';
     ROWS.forEach(function (r, i) {
@@ -203,6 +212,34 @@
     if (c.json)  return '<td>' + esc(typeof v === 'object' ? JSON.stringify(v) : v) + '</td>';
     if (c.date)  return '<td class="mono">' + esc(String(v).slice(0, 16).replace('T', ' ')) + '</td>';
     return '<td class="' + (c.mono ? 'mono' : c.err ? 'err' : '') + '">' + esc(v) + '</td>';
+  }
+
+  function renderUnclaimed() {
+    var host = document.getElementById('unclaimedTable');
+    if (!UNCLAIMED.length) { host.innerHTML = '<p class="empty">Every workbook created here is linked to a workspace.</p>'; return; }
+    var html = '<table><thead><tr><th>Client</th><th>Created</th><th>By</th><th>Workbook</th><th></th></tr></thead><tbody>';
+    UNCLAIMED.forEach(function (r, i) {
+      html += '<tr><td>' + esc(r.client_name) + '</td><td class="mono">' + esc(String(r.created_at).slice(0, 16).replace('T', ' ')) + '</td><td>' + esc(r.created_by) + '</td>' +
+        '<td><a href="' + esc(r.workbook_url) + '">open</a></td><td class="acts">' +
+        '<button class="quiet" data-u="' + i + '" data-act="health">Check workbook</button>' +
+        (CTX.registryMode === 'live' ? '<button class="quiet" data-u="' + i + '" data-act="claim">Claim workspace</button>' : '') +
+        '</td></tr>';
+    });
+    host.innerHTML = html + '</tbody></table>';
+    host.querySelectorAll('button[data-act]').forEach(function (b) { b.addEventListener('click', function (ev) {
+      var r = UNCLAIMED[Number(ev.currentTarget.getAttribute('data-u'))], act = ev.currentTarget.getAttribute('data-act');
+      if (act === 'health') showHealth(r.spreadsheet_id); else claimWorkbook(r.spreadsheet_id, ev.currentTarget);
+    }); });
+  }
+
+  function claimWorkbook(spreadsheetId, btn) {
+    if (!confirm('Claim the first available workspace for this workbook and write its router settings?')) return;
+    if (btn) btn.disabled = true; setListStatus('Claiming…');
+    run().withSuccessHandler(function (res) {
+      setListStatus('Claimed ' + res.workspaceKey + '.');
+      showDetail('Claimed — ' + res.workspaceKey, '<p class="ok">State ' + esc(res.state) + '. Wrote ' + esc((res.written || []).join(', ')) + '.</p>');
+      ROWS = []; UNCLAIMED = []; loadWorkspaces();
+    }).withFailureHandler(function (e) { if (btn) btn.disabled = false; setListStatus(e.message, true); }).claimWorkbook(spreadsheetId);
   }
 
   var CONFIRM = { prepare:  'Deploy the golden estate into this workspace? Runs in the background; use Status to follow it.',
@@ -246,11 +283,17 @@
         }).join('') + '</tbody></table>';
       }
       var pfOk = h.checks.some(function (c) { return c.name === 'preflight' && c.ok; });
+      var bound = h.checks.some(function (c) { return c.name === 'binding' && c.ok; });
+      if (!bound && CTX.registryMode === 'live') {
+        html += '<div class="actions"><button class="quiet" id="claimBtn">Claim workspace</button><span class="status">Binds the first available workspace and writes router.baseUrl / meta.workspace_key.</span></div>';
+      }
       if (CTX.provisionEnabled) {
         html += '<div class="actions"><button class="quiet" id="prov" ' + (pfOk ? '' : 'disabled') + '>Provision (initial)</button>' +
                 '<span class="status">' + (pfOk ? 'Same call as “Start supplier data collection”.' : 'Preflight must pass first.') + '</span></div>';
       }
       showDetail('Workbook check', html);
+      var cb = document.getElementById('claimBtn');
+      if (cb) cb.addEventListener('click', function () { claimWorkbook(h.spreadsheetId, cb); });
       var p = document.getElementById('prov');
       if (p) p.addEventListener('click', function () {
         if (!confirm('Send this configuration to Workato as an initial provision?')) return;
@@ -277,7 +320,8 @@
       var fs = document.createElement('fieldset'); fs.innerHTML = '<legend>' + esc(g.title) + '</legend>';
       g.fields.forEach(function (f) { fs.appendChild(renderField(f)); }); host.appendChild(fs);
     });
-    document.getElementById('create').onclick = submit;
+    document.getElementById('create').onclick = function () { submit(false); };
+    var cc = document.getElementById('createClaim'); cc.hidden = CTX.registryMode !== 'live'; cc.onclick = function () { submit(true); };
   }
   function renderField(f) {
     var wrap = document.createElement('div'); wrap.className = 'field';
@@ -308,7 +352,7 @@
       }).withFailureHandler(function (e) { setStatus(e.message, true); }).getPackQuestions(sel.value);
     };
   }
-  function submit() {
+  function submit(claim) {
     var customer = {};
     SCHEMA.groups.forEach(function (g) { g.fields.forEach(function (f) { var el = document.getElementById(f.key); customer[f.key] = f.input === 'checkbox' ? el.checked : el.value; }); });
     var packId = document.getElementById('packId').value, pack = null;
@@ -316,10 +360,11 @@
       var answers = {}; document.querySelectorAll('#packQuestions input[data-q]').forEach(function (i) { answers[i.getAttribute('data-q')] = i.checked; });
       pack = { fileId: packId, answers: answers, mode: document.querySelector('input[name=mode]:checked').value };
     }
-    var btn = document.getElementById('create'); btn.disabled = true; setStatus('Creating workbook…');
-    google.script.run.withSuccessHandler(function (r) { btn.disabled = false; setStatus('Done.'); ROWS = []; showResult(r); })
-         .withFailureHandler(function (e) { btn.disabled = false; setStatus(e.message, true); })
-         .createImplementation({ customer: customer, pack: pack });
+    var btns = [document.getElementById('create'), document.getElementById('createClaim')];
+    btns.forEach(function (b) { b.disabled = true; }); setStatus(claim ? 'Creating workbook and claiming a workspace…' : 'Creating workbook…');
+    google.script.run.withSuccessHandler(function (r) { btns.forEach(function (b) { b.disabled = false; }); setStatus('Done.'); ROWS = []; UNCLAIMED = []; showResult(r); })
+         .withFailureHandler(function (e) { btns.forEach(function (b) { b.disabled = false; }); setStatus(e.message, true); })
+         .createImplementation({ customer: customer, pack: pack, claim: !!claim });
   }
   function showResult(r) {
     var w = r.workbook, html = '<h2>Created</h2><p><a href="' + esc(w.url) + '">' + esc(w.name) + '</a> <span class="status">· correlation ' + esc(w.correlationId) + '</span></p>';
@@ -330,8 +375,10 @@
     html += '<h3>Read back through Customer.read</h3><pre>' + esc(JSON.stringify(w.readback.values, null, 2)) + '</pre>';
     html += '<h3>Preflight</h3><p class="' + (w.preflight.ok ? 'ok' : 'bad') + '">' + esc(w.preflight.message) + '</p>';
     if (r.pack && r.pack.message) html += '<h3>Field pack</h3><p class="' + (r.pack.applied ? 'ok' : 'bad') + '">' + esc(r.pack.message) + '</p>' + (r.pack.warnings.length ? '<pre>' + esc(r.pack.warnings.join('\n')) + '</pre>' : '');
-    html += '<h3>Registry</h3><p class="' + (r.registry.error ? 'bad' : '') + '">' + esc(r.registry.mode) + ' — ' + esc(r.registry.state) +
-            (r.registry.workspaceKey ? ', workspace ' + esc(r.registry.workspaceKey) : '') + (r.registry.error ? '. ' + esc(r.registry.error) : '') + '</p>';
+    html += '<h3>Workspace</h3><p class="' + (r.registry.error ? 'bad' : '') + '">' +
+            (r.registry.workspaceKey ? 'Linked to ' + esc(r.registry.workspaceKey) + ' (' + esc(r.registry.state) + ').'
+                                     : 'Not linked to a workspace yet; claim one from the Workspaces view when ready.') +
+            (r.registry.error ? ' Claim failed: ' + esc(r.registry.error) : '') + '</p>';
     html += '<p><a href="#list">Back to workspaces</a></p>';
     var el = document.getElementById('result'); el.innerHTML = html; el.hidden = false; el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
