@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base target="_top">
+<style>
+  /* Brand tokens. Navy is the surface, so the page is dark by design; the
+     OS light/dark setting is deliberately not consulted. */
+  :root {
+    color-scheme: dark;
+    --navy: #0F1941;  --yellow: #E6FF00;  --blue: #2175D9;  --paper: #F7F5F0;  --teal: #6BA5B4;
+
+    --bg: var(--navy);
+    --panel: #1A2552;                          /* navy lifted one step: inputs, pre, quiet buttons */
+    --ink: var(--paper);
+    --muted: rgba(247, 245, 240, .68);
+    --line: rgba(247, 245, 240, .16);
+    --accent: var(--yellow); --accent-ink: var(--navy);
+    --link: #7FB1EE;                           /* tint of #2175D9 that passes contrast on navy */
+    --warn-bg: rgba(230, 255, 0, .10); --warn-ink: var(--yellow);
+    --ok: var(--teal);
+    --err: #FF8D93;                            /* not in the palette; kept so failures read as failures */
+    --mono: Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.55 Tahoma, Verdana, "Segoe UI", Geneva, sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 28px 20px 64px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 4px;
+    padding-bottom: 10px; border-bottom: 3px solid var(--accent); }
+  h1 { font-size: 23px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+  nav a { color: var(--link); text-decoration: none; font-weight: 700; margin-left: 18px; padding-bottom: 2px; }
+  nav a[aria-current] { color: var(--accent); border-bottom: 2px solid var(--accent); }
+  .lede { color: var(--muted); margin: 12px 0 20px; }
+  .context { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; color: var(--muted);
+    padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 24px; }
+  .context b { color: var(--ink); font-weight: 700; }
+  .notice { background: var(--warn-bg); color: var(--warn-ink); border-left: 3px solid var(--accent);
+    padding: 10px 14px; border-radius: 0 4px 4px 0; font-size: 13px; margin: -12px 0 20px; }
+  fieldset { border: 0; padding: 0; margin: 0 0 26px; }
+  legend { font-weight: 700; font-size: 15px; padding: 0; margin-bottom: 10px; color: var(--ink); }
+  .field { margin-bottom: 14px; }
+  label { display: block; font-weight: 700; margin-bottom: 4px; }
+  label small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .hint { font-size: 12.5px; color: var(--teal); margin-top: 4px; }
+  input[type=text], input[type=number], input[type=date], textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); font: inherit; }
+  input::placeholder, textarea::placeholder { color: var(--muted); }
+  textarea { min-height: 96px; resize: vertical; }
+  input:focus, textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .check { display: flex; align-items: flex-start; gap: 10px; font-weight: 400; }
+  .check input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); flex: none; }
+  .radios { display: flex; gap: 18px; }
+  .actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+  .inline { display: flex; gap: 8px; align-items: center; } .inline input { width: 360px; max-width: 60vw; }
+  button { font: inherit; cursor: pointer; border-radius: 4px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border: 0; padding: 10px 18px; font-weight: 700; }
+  button.primary:hover:not([disabled]) { background: #F2FF66; }
+  button.quiet { background: var(--panel); color: var(--ink); border: 1px solid var(--line); padding: 5px 10px; font-size: 13px; }
+  button.quiet:hover:not([disabled]) { border-color: var(--blue); background: rgba(33, 117, 217, .22); }
+  button[disabled] { opacity: .5; cursor: default; }
+  .status { color: var(--muted); font-size: 13.5px; } .status.err { color: var(--err); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 12px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 700; color: var(--muted); }
+  td.mono { font-family: var(--mono); white-space: nowrap; color: var(--teal); }
+  td.acts { white-space: nowrap; } td.acts button { margin-right: 6px; }
+  td.err { color: var(--err); max-width: 260px; }
+  td a, .panel a { color: var(--link); }
+  .state { display: inline-block; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); font-size: 12px; }
+  .ok { color: var(--ok); } .bad { color: var(--err); }
+  .panel { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+  .panel h2 { font-size: 18px; margin: 0 0 6px; } .panel h3 { font-size: 15px; margin: 18px 0 6px; }
+  .panel p { margin: 0 0 10px; }
+  pre { font: 12px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 10px; overflow-x: auto; color: var(--paper); }
+  .empty { color: var(--muted); padding: 24px 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Implementations</h1>
+    <nav><a href="#list" id="navList">Workspaces</a><a href="#new" id="navNew">New implementation</a></nav>
+  </header>
+  <p class="lede" id="lede"></p>
+  <div class="context" id="context">Loading…</div>
+  <div class="notice" id="notice" hidden></div>
+
+  <!-- ===== Workspaces view ===== -->
+  <section id="viewList" hidden>
+    <div class="actions" style="margin-bottom:12px">
+      <button class="quiet" id="refresh" type="button">Refresh</button>
+      <span class="status" id="listStatus"></span>
+      <span style="flex:1"></span>
+      <form class="inline" id="checkForm" onsubmit="return false;">
+        <input type="text" id="checkId" placeholder="Check any workbook — paste its URL or ID">
+        <button class="quiet" id="checkBtn" type="button">Check</button>
+      </form>
+    </div>
+    <div id="wsTable"></div>
+    <div class="panel" id="detail" hidden></div>
+  </section>
+
+  <!-- ===== Kickoff view ===== -->
+  <section id="viewNew" hidden>
+    <form id="form" onsubmit="return false;">
+      <div id="groups"></div>
+      <fieldset id="packset" hidden>
+        <legend>Field pack</legend>
+        <div class="field">
+          <label for="packId">Pack <small>optional</small></label>
+          <select id="packId"><option value="">None — leave 4_fields empty</option></select>
+          <div class="hint">Pre-fills 4_fields, 4_complex_validations and 5_lookups from a reviewed pack for the target VMS.</div>
+        </div>
+        <div id="packQuestions"></div>
+        <div class="field" id="packMode" hidden>
+          <label>Collection mode</label>
+          <div class="radios">
+            <label class="check"><input type="radio" name="mode" value="standard" checked> Standard — rows fail where Strict is ticked</label>
+            <label class="check"><input type="radio" name="mode" value="discovery"> Discovery — nothing rejected, failures reported</label>
+          </div>
+        </div>
+      </fieldset>
+      <div class="actions">
+        <button class="primary" id="create" type="button">Create workbook</button>
+        <span class="status" id="status"></span>
+      </div>
+    </form>
+    <div class="panel" id="result" hidden></div>
+  </section>
+</main>
+
+<script>
+  var CTX = null, SCHEMA = null, ROWS = [];
+  var run = function () { return google.script.run.withFailureHandler(function (e) { setListStatus(e && e.message ? e.message : String(e), true); }); };
+
+  // ---------- routing ----------
+  function route() {
+    var v = location.hash === '#new' ? 'new' : 'list';
+    document.getElementById('viewList').hidden = v !== 'list';
+    document.getElementById('viewNew').hidden = v !== 'new';
+    document.getElementById('navList').toggleAttribute('aria-current', v === 'list');
+    document.getElementById('navNew').toggleAttribute('aria-current', v === 'new');
+    document.getElementById('title').textContent = v === 'new' ? 'New implementation' : 'Implementations';
+    document.getElementById('lede').textContent = v === 'new'
+      ? 'Creates a configuration workbook from the template with the engagement details filled in. Provisioning is a separate step.'
+      : 'Workspaces in the registry, their state, and what the library can tell about each workbook.';
+    if (v === 'list' && !ROWS.length) loadWorkspaces();
+    if (v === 'new' && !SCHEMA) loadForm();
+  }
+  window.addEventListener('hashchange', route);
+
+  google.script.run.withSuccessHandler(function (c) {
+    CTX = c;
+    document.getElementById('context').innerHTML =
+      '<span>Signed in as <b>' + esc(c.user) + '</b></span>' +
+      '<span>lib_sdc <b>' + esc(c.libraryVersion) + '</b>, schema <b>' + esc(c.schemaVersion) + '</b></span>' +
+      '<span>Registry <b>' + esc(c.registryMode) + '</b></span>' +
+      (c.provisionEnabled ? '<span>Provision from app <b>enabled</b></span>' : '');
+    var warn = [];
+    if (c.settingsError) warn.push(c.settingsError);
+    else if (!c.templateConfigured) warn.push('_settings → template.workbookId is blank; creating a workbook will fail until it is set.');
+    if (c.registryMode !== 'live') warn.push('Registry is in dry run: the list shows workbooks created here; router actions and status are unavailable.');
+    if (warn.length) { var n = document.getElementById('notice'); n.textContent = warn.join(' '); n.hidden = false; }
+    route();
+  }).withFailureHandler(function (e) { document.getElementById('context').textContent = e.message; }).getContext();
+
+  // ---------- workspaces ----------
+  // Columns as the routing workbook's `registry` view names them (REGISTRY_COLUMNS in Code.js).
+  var COLS = [
+    { k: 'workspace_key', t: 'Workspace', mono: true }, { k: 'state', t: 'State', state: true }, { k: 'client_name', t: 'Client' },
+    { k: 'bound_at', t: 'Bound', date: true }, { k: 'updated_at', t: 'Updated', date: true },
+    { k: 'pending_connections', t: 'Pending connections', json: true }, { k: 'last_error', t: 'Last error', err: true }
+  ];
+  document.getElementById('refresh').addEventListener('click', function () { ROWS = []; loadWorkspaces(); });
+  document.getElementById('checkBtn').addEventListener('click', function () { var v = document.getElementById('checkId').value.trim(); if (v) showHealth(v); });
+
+  function loadWorkspaces() {
+    setListStatus('Loading…');
+    run().withSuccessHandler(function (r) { ROWS = r.rows; setListStatus(r.rows.length + ' workspace' + (r.rows.length === 1 ? '' : 's')); renderWorkspaces(); }).listWorkspaces();
+  }
+
+  function renderWorkspaces() {
+    var host = document.getElementById('wsTable');
+    if (!ROWS.length) { host.innerHTML = '<p class="empty">Nothing in the registry' + (CTX.registryMode === 'live' ? '.' : ' yet. Create an implementation to see it here.') + '</p>'; return; }
+    var cols = COLS.filter(function (c) { return ROWS.some(function (r) { return r[c.k] !== undefined && r[c.k] !== '' && r[c.k] !== null; }); });
+    var html = '<table><thead><tr>' + cols.map(function (c) { return '<th>' + esc(c.t) + '</th>'; }).join('') + '<th>Workbook</th><th></th></tr></thead><tbody>';
+    ROWS.forEach(function (r, i) {
+      html += '<tr>' + cols.map(function (c) { return cell(c, r[c.k]); }).join('');
+      html += '<td>' + (r.workbook_url ? '<a href="' + esc(r.workbook_url) + '">open</a>' : '') + '</td>';
+      html += '<td class="acts">' +
+        (r.spreadsheet_id ? '<button class="quiet" data-i="' + i + '" data-act="health">Check workbook</button>' : '') +
+        (r.workspace_key && CTX.registryMode === 'live' ? '<button class="quiet" data-i="' + i + '" data-act="status">Status</button>' : '') +
+        (r._actions || []).map(function (a) { return '<button class="quiet" data-i="' + i + '" data-act="' + a + '">' + cap(a) + '</button>'; }).join('') +
+        '</td></tr>';
+    });
+    host.innerHTML = html + '</tbody></table>';
+    host.querySelectorAll('button[data-act]').forEach(function (b) { b.addEventListener('click', onRowAction); });
+  }
+  function cell(c, v) {
+    if (v === undefined || v === null || v === '') return '<td></td>';
+    if (c.state) return '<td><span class="state">' + esc(v) + '</span></td>';
+    if (c.json)  return '<td>' + esc(typeof v === 'object' ? JSON.stringify(v) : v) + '</td>';
+    if (c.date)  return '<td class="mono">' + esc(String(v).slice(0, 16).replace('T', ' ')) + '</td>';
+    return '<td class="' + (c.mono ? 'mono' : c.err ? 'err' : '') + '">' + esc(v) + '</td>';
+  }
+
+  var CONFIRM = { prepare:  'Deploy the golden estate into this workspace? Runs in the background; use Status to follow it.',
+                  register: 'Register this workspace (API client, token, health check → available)? Authorise its pending connections first.',
+                  release:  'Return this workspace to the pool and clear its binding? For an inactive workspace, confirm client data has been purged.',
+                  close:    'Mark this engagement finished (active → inactive)? The workbook can no longer send to this workspace.' };
+
+  function onRowAction(ev) {
+    var b = ev.currentTarget, r = ROWS[Number(b.getAttribute('data-i'))], act = b.getAttribute('data-act');
+    if (act === 'health') return showHealth(r.spreadsheet_id);
+    if (act === 'status') return run().withSuccessHandler(function (s) {
+      var html = '<p>State <span class="state">' + esc(s.state) + '</span>' + (s.api_base_url ? ' · API ' + esc(s.api_base_url) : '') + '</p>' +
+                 (s.pending_connections ? '<h3>Pending connections</h3><pre>' + esc(JSON.stringify(s.pending_connections, null, 2)) + '</pre>' : '') +
+                 (s.last_job ? '<h3>Last job</h3><pre>' + esc(JSON.stringify(s.last_job, null, 2)) + '</pre>' : '') +
+                 (s.last_error ? '<p class="bad">' + esc(s.last_error) + '</p>' : '') +
+                 '<h3>Row</h3><pre>' + esc(JSON.stringify(s, null, 2)) + '</pre>';
+      showDetail('Status — ' + r.workspace_key, html);
+    }).getWorkspaceStatus(r.workspace_key);
+    if (CONFIRM[act] && !confirm(CONFIRM[act])) return;
+    b.disabled = true; setListStatus(cap(act) + ' ' + r.workspace_key + '…');
+    run().withSuccessHandler(function (res) {
+      setListStatus(cap(act) + ': ' + (res.result.state || 'accepted') + (res.result.job_id ? ', job ' + res.result.job_id : ''));
+      showDetail(cap(act) + ' — ' + r.workspace_key, '<pre>' + esc(JSON.stringify(res.result, null, 2)) + '</pre>');
+      ROWS = []; loadWorkspaces();
+    }).withFailureHandler(function (e) { b.disabled = false; setListStatus(e.message, true); }).workspaceAction(act, r.workspace_key);
+  }
+
+  function showHealth(spreadsheetId) {
+    setListStatus('Checking workbook…');
+    run().withSuccessHandler(function (h) {
+      setListStatus('');
+      var html = '<p><a href="' + esc(h.url || '#') + '">' + esc(h.name || h.spreadsheetId) + '</a>' +
+                 (h.customer ? ' <span class="status">· ' + esc(h.customer.clientName || '') + (h.customer.targetVms ? ' · ' + esc(h.customer.targetVms) : '') + '</span>' : '') + '</p>';
+      html += '<table><tbody>' + h.checks.map(function (c) {
+        var cls = c.ok === true ? 'ok' : (c.ok === false ? 'bad' : '');
+        return '<tr><td class="mono">' + esc(c.name) + '</td><td class="' + cls + '">' + (c.ok === true ? 'ok' : c.ok === false ? 'attention' : '—') + '</td><td>' + esc(c.detail) + '</td></tr>';
+      }).join('') + '</tbody></table>';
+      if (h.recentLog && h.recentLog.length) {
+        html += '<h3>Recent activity</h3><table><tbody>' + h.recentLog.map(function (l) {
+          return '<tr><td class="mono">' + esc(String(l.at).slice(0, 16).replace('T', ' ')) + '</td><td>' + esc(l.status) + '</td><td>' + esc(l.message) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+      }
+      var pfOk = h.checks.some(function (c) { return c.name === 'preflight' && c.ok; });
+      if (CTX.provisionEnabled) {
+        html += '<div class="actions"><button class="quiet" id="prov" ' + (pfOk ? '' : 'disabled') + '>Provision (initial)</button>' +
+                '<span class="status">' + (pfOk ? 'Same call as “Start supplier data collection”.' : 'Preflight must pass first.') + '</span></div>';
+      }
+      showDetail('Workbook check', html);
+      var p = document.getElementById('prov');
+      if (p) p.addEventListener('click', function () {
+        if (!confirm('Send this configuration to Workato as an initial provision?')) return;
+        p.disabled = true;
+        run().withSuccessHandler(function (res) { showDetail('Provision — ' + (res.ok ? 'ok' : 'failed'), '<p class="' + (res.ok ? 'ok' : 'bad') + '">' + esc(res.message) + '</p><pre>' + esc(JSON.stringify(res.data || res.error, null, 2)) + '</pre>'); })
+             .withFailureHandler(function (e) { p.disabled = false; setListStatus(e.message, true); }).provisionImplementation(spreadsheetId, true);
+      });
+    }).checkImplementation(spreadsheetId);
+  }
+
+  function showDetail(title, html) {
+    var d = document.getElementById('detail'); d.innerHTML = '<h2>' + esc(title) + '</h2>' + html; d.hidden = false; d.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ---------- kickoff form ----------
+  function loadForm() {
+    google.script.run.withSuccessHandler(onSchema).withFailureHandler(function (e) { setStatus(e.message, true); }).getFormSchema();
+    google.script.run.withSuccessHandler(onPacks).getPacks();
+  }
+  function onSchema(s) {
+    SCHEMA = s;
+    var host = document.getElementById('groups'); host.innerHTML = '';
+    s.groups.forEach(function (g) {
+      var fs = document.createElement('fieldset'); fs.innerHTML = '<legend>' + esc(g.title) + '</legend>';
+      g.fields.forEach(function (f) { fs.appendChild(renderField(f)); }); host.appendChild(fs);
+    });
+    document.getElementById('create').onclick = submit;
+  }
+  function renderField(f) {
+    var wrap = document.createElement('div'); wrap.className = 'field';
+    var opt = f.required ? '' : '<small>optional</small>';
+    if (f.input === 'checkbox') wrap.innerHTML = '<label class="check"><input type="checkbox" id="' + f.key + '"><span>' + esc(f.label) + opt + '</span></label>';
+    else {
+      var ctl = f.input === 'textarea' ? '<textarea id="' + f.key + '"></textarea>'
+              : '<input type="' + f.input + '" id="' + f.key + '"' + (f.type === 'int' ? ' min="0" step="1"' : '') + '>';
+      wrap.innerHTML = '<label for="' + f.key + '">' + esc(f.label) + opt + '</label>' + ctl + (f.hint ? '<div class="hint">' + esc(f.hint) + '</div>' : '');
+    }
+    return wrap;
+  }
+  function onPacks(packs) {
+    if (!packs || !packs.length) return;
+    var sel = document.getElementById('packId');
+    packs.forEach(function (p) { var o = document.createElement('option'); o.value = p.fileId; o.textContent = p.vms + ' / ' + p.record_type + '  (v' + p.pack_version + ')'; sel.appendChild(o); });
+    document.getElementById('packset').hidden = false;
+    sel.onchange = function () {
+      var q = document.getElementById('packQuestions'); q.innerHTML = '';
+      document.getElementById('packMode').hidden = !sel.value;
+      if (!sel.value) return;
+      google.script.run.withSuccessHandler(function (qs) {
+        qs.forEach(function (x) {
+          var d = document.createElement('div'); d.className = 'field';
+          d.innerHTML = '<label class="check"><input type="checkbox" data-q="' + esc(x.id) + '"><span>' + esc(x.prompt) + '<small>' + esc(x.field) + ' · ' + esc(x.effect) + '</small></span></label>';
+          q.appendChild(d);
+        });
+      }).withFailureHandler(function (e) { setStatus(e.message, true); }).getPackQuestions(sel.value);
+    };
+  }
+  function submit() {
+    var customer = {};
+    SCHEMA.groups.forEach(function (g) { g.fields.forEach(function (f) { var el = document.getElementById(f.key); customer[f.key] = f.input === 'checkbox' ? el.checked : el.value; }); });
+    var packId = document.getElementById('packId').value, pack = null;
+    if (packId) {
+      var answers = {}; document.querySelectorAll('#packQuestions input[data-q]').forEach(function (i) { answers[i.getAttribute('data-q')] = i.checked; });
+      pack = { fileId: packId, answers: answers, mode: document.querySelector('input[name=mode]:checked').value };
+    }
+    var btn = document.getElementById('create'); btn.disabled = true; setStatus('Creating workbook…');
+    google.script.run.withSuccessHandler(function (r) { btn.disabled = false; setStatus('Done.'); ROWS = []; showResult(r); })
+         .withFailureHandler(function (e) { btn.disabled = false; setStatus(e.message, true); })
+         .createImplementation({ customer: customer, pack: pack });
+  }
+  function showResult(r) {
+    var w = r.workbook, html = '<h2>Created</h2><p><a href="' + esc(w.url) + '">' + esc(w.name) + '</a> <span class="status">· correlation ' + esc(w.correlationId) + '</span></p>';
+    html += '<h3>Steps</h3><table><tbody>' + w.stages.map(function (s) { return '<tr><td class="mono">' + esc(s.name) + '</td><td class="' + (s.ok ? 'ok' : 'bad') + '">' + (s.ok ? 'ok' : 'failed') + '</td><td>' + esc(typeof s.detail === 'string' ? s.detail : '') + '</td></tr>'; }).join('') + '</tbody></table>';
+    html += '<h3>Written to 1_customer</h3><table><thead><tr><th>Field</th><th>Cell</th><th>Value</th></tr></thead><tbody>' +
+      w.written.map(function (x) { return '<tr><td>' + esc(x.key) + '</td><td class="mono">' + esc(x.a1) + '</td><td>' + esc(String(x.value)) + '</td></tr>'; }).join('') + '</tbody></table>';
+    if (w.missingRanges.length) html += '<p class="bad">Named ranges not found in the copy: ' + esc(w.missingRanges.join(', ')) + '.</p>';
+    html += '<h3>Read back through Customer.read</h3><pre>' + esc(JSON.stringify(w.readback.values, null, 2)) + '</pre>';
+    html += '<h3>Preflight</h3><p class="' + (w.preflight.ok ? 'ok' : 'bad') + '">' + esc(w.preflight.message) + '</p>';
+    if (r.pack && r.pack.message) html += '<h3>Field pack</h3><p class="' + (r.pack.applied ? 'ok' : 'bad') + '">' + esc(r.pack.message) + '</p>' + (r.pack.warnings.length ? '<pre>' + esc(r.pack.warnings.join('\n')) + '</pre>' : '');
+    html += '<h3>Registry</h3><p class="' + (r.registry.error ? 'bad' : '') + '">' + esc(r.registry.mode) + ' — ' + esc(r.registry.state) +
+            (r.registry.workspaceKey ? ', workspace ' + esc(r.registry.workspaceKey) : '') + (r.registry.error ? '. ' + esc(r.registry.error) : '') + '</p>';
+    html += '<p><a href="#list">Back to workspaces</a></p>';
+    var el = document.getElementById('result'); el.innerHTML = html; el.hidden = false; el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ---------- utils ----------
+  function setStatus(t, isErr) { var s = document.getElementById('status'); s.textContent = t; s.className = 'status' + (isErr ? ' err' : ''); }
+  function setListStatus(t, isErr) { var s = document.getElementById('listStatus'); s.textContent = t; s.className = 'status' + (isErr ? ' err' : ''); }
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+</script>
+</body>
+</html>
