@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base target="_top">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fbfbf9; --panel: #ffffff; --ink: #1f2328; --muted: #646b73; --line: #dfe2e5;
+    --accent: #0b6e6e; --accent-ink: #ffffff; --warn-bg: #fff6e0; --warn-ink: #6b4a00;
+    --ok: #1d7a3a; --err: #a4232c; --mono: "SF Mono", Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { color-scheme: dark;
+      --bg: #15181b; --panel: #1c2024; --ink: #e8eaed; --muted: #9aa3ab; --line: #30363c;
+      --accent: #3fb6b6; --accent-ink: #0d1b1b; --warn-bg: #3a2e10; --warn-ink: #f2d38a; --ok: #5ccf7f; --err: #ff8d93; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 620px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; }
+  .lede { color: var(--muted); margin: 0 0 24px; }
+  .context { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted);
+    padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 28px; }
+  .context b { color: var(--ink); font-weight: 500; }
+  .notice { background: var(--warn-bg); color: var(--warn-ink); padding: 10px 14px; border-radius: 6px; font-size: 13px; margin: -16px 0 24px; }
+  fieldset { border: 0; padding: 0; margin: 0 0 28px; }
+  legend { font-weight: 600; font-size: 15px; padding: 0; margin-bottom: 10px; }
+  .field { margin-bottom: 14px; }
+  label { display: block; font-weight: 500; margin-bottom: 4px; }
+  label small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .hint { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  input[type=text], input[type=number], input[type=date], textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; }
+  textarea { min-height: 96px; resize: vertical; }
+  input:focus, textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .check { display: flex; align-items: flex-start; gap: 10px; font-weight: 400; }
+  .check input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); flex: none; }
+  .radios { display: flex; gap: 18px; }
+  .actions { display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 6px; padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary[disabled] { opacity: .55; cursor: default; }
+  .status { color: var(--muted); font-size: 14px; }
+  .status.err { color: var(--err); }
+  .result { margin-top: 36px; padding-top: 24px; border-top: 1px solid var(--line); }
+  .result h2 { font-size: 18px; margin: 0 0 6px; }
+  .result h3 { font-size: 15px; margin: 20px 0 6px; }
+  .result p { margin: 0 0 10px; }
+  .result a { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 12px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 500; color: var(--muted); }
+  td.mono { font-family: var(--mono); white-space: nowrap; }
+  .ok { color: var(--ok); } .bad { color: var(--err); }
+  pre { font: 12px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>New implementation</h1>
+  <p class="lede">Creates a configuration workbook from the base template with the engagement details filled in. Provisioning is a separate step.</p>
+
+  <div class="context" id="context">Loading…</div>
+  <div class="notice" id="notice" hidden></div>
+
+  <form id="form" onsubmit="return false;">
+    <div id="groups"></div>
+
+    <fieldset id="packset" hidden>
+      <legend>Field pack</legend>
+      <div class="field">
+        <label for="packId">Pack <small>optional</small></label>
+        <select id="packId"><option value="">None — leave 4_fields empty</option></select>
+        <div class="hint">Pre-fills 4_fields, 4_complex_validations and 5_lookups from a reviewed pack for the target VMS.</div>
+      </div>
+      <div id="packQuestions"></div>
+      <div class="field" id="packMode" hidden>
+        <label>Collection mode</label>
+        <div class="radios">
+          <label class="check"><input type="radio" name="mode" value="standard" checked> Standard — rows fail where Strict is ticked</label>
+          <label class="check"><input type="radio" name="mode" value="discovery"> Discovery — nothing rejected, failures reported</label>
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button class="primary" id="create" type="button">Create workbook</button>
+      <span class="status" id="status"></span>
+    </div>
+  </form>
+
+  <section class="result" id="result" hidden></section>
+</main>
+
+<script>
+  var SCHEMA = null;
+  google.script.run.withSuccessHandler(onSchema).withFailureHandler(fail).getFormSchema();
+  google.script.run.withSuccessHandler(onPacks).getPacks();
+
+  function onSchema(s) {
+    SCHEMA = s;
+    var c = s.context;
+    document.getElementById('context').innerHTML =
+      '<span>Signed in as <b>' + esc(c.user) + '</b></span>' +
+      '<span>lib_sdc <b>' + esc(s.libraryVersion) + '</b>, schema <b>' + esc(s.schemaVersion) + '</b>, ' + s.fieldCount + ' fields</span>' +
+      '<span>Registry <b>' + esc(c.registryMode) + '</b></span>';
+    if (!c.templateConfigured) { var n = document.getElementById('notice'); n.textContent = 'SDC_BASE_TEMPLATE_ID is not set — creating a workbook will fail until it is.'; n.hidden = false; }
+
+    var host = document.getElementById('groups');
+    s.groups.forEach(function (g) {
+      var fs = document.createElement('fieldset');
+      fs.innerHTML = '<legend>' + esc(g.title) + '</legend>';
+      g.fields.forEach(function (f) { fs.appendChild(renderField(f)); });
+      host.appendChild(fs);
+    });
+    document.getElementById('create').addEventListener('click', submit);
+  }
+
+  function renderField(f) {
+    var wrap = document.createElement('div'); wrap.className = 'field';
+    var opt = f.required ? '' : '<small>optional</small>';
+    if (f.input === 'checkbox') {
+      wrap.innerHTML = '<label class="check"><input type="checkbox" id="' + f.key + '"><span>' + esc(f.label) + opt + '</span></label>';
+    } else {
+      var ctl = f.input === 'textarea'
+        ? '<textarea id="' + f.key + '"></textarea>'
+        : '<input type="' + f.input + '" id="' + f.key + '"' + (f.type === 'int' ? ' min="0" step="1"' : '') + '>';
+      wrap.innerHTML = '<label for="' + f.key + '">' + esc(f.label) + opt + '</label>' + ctl + (f.hint ? '<div class="hint">' + esc(f.hint) + '</div>' : '');
+    }
+    return wrap;
+  }
+
+  function onPacks(packs) {
+    if (!packs || !packs.length) return;
+    var sel = document.getElementById('packId');
+    packs.forEach(function (p) {
+      var o = document.createElement('option'); o.value = p.fileId;
+      o.textContent = p.vms + ' / ' + p.record_type + '  (v' + p.pack_version + ')'; sel.appendChild(o);
+    });
+    document.getElementById('packset').hidden = false;
+    sel.addEventListener('change', function () {
+      var q = document.getElementById('packQuestions'); q.innerHTML = '';
+      document.getElementById('packMode').hidden = !sel.value;
+      if (!sel.value) return;
+      google.script.run.withSuccessHandler(function (qs) {
+        qs.forEach(function (x) {
+          var d = document.createElement('div'); d.className = 'field';
+          d.innerHTML = '<label class="check"><input type="checkbox" data-q="' + esc(x.id) + '"><span>' + esc(x.prompt) +
+                        '<small>' + esc(x.field) + ' · ' + esc(x.effect) + '</small></span></label>';
+          q.appendChild(d);
+        });
+      }).withFailureHandler(fail).getPackQuestions(sel.value);
+    });
+  }
+
+  function submit() {
+    var customer = {};
+    SCHEMA.groups.forEach(function (g) { g.fields.forEach(function (f) {
+      var el = document.getElementById(f.key); customer[f.key] = f.input === 'checkbox' ? el.checked : el.value;
+    }); });
+    var packId = document.getElementById('packId').value, pack = null;
+    if (packId) {
+      var answers = {};
+      document.querySelectorAll('#packQuestions input[data-q]').forEach(function (i) { answers[i.getAttribute('data-q')] = i.checked; });
+      pack = { fileId: packId, answers: answers, mode: document.querySelector('input[name=mode]:checked').value };
+    }
+    var btn = document.getElementById('create'); btn.disabled = true; setStatus('Creating workbook…');
+    google.script.run
+      .withSuccessHandler(function (r) { btn.disabled = false; setStatus('Done.'); showResult(r); })
+      .withFailureHandler(function (e) { btn.disabled = false; fail(e); })
+      .createImplementation({ customer: customer, pack: pack });
+  }
+
+  function showResult(r) {
+    var w = r.workbook, html = '<h2>Created</h2><p><a href="' + esc(w.url) + '">Open the workbook</a> <span class="status">· correlation ' + esc(w.correlationId) + '</span></p>';
+
+    html += '<h3>Steps</h3><table><tbody>';
+    w.stages.forEach(function (s) { html += '<tr><td class="mono">' + esc(s.name) + '</td><td class="' + (s.ok ? 'ok' : 'bad') + '">' + (s.ok ? 'ok' : 'failed') + '</td><td>' + esc(typeof s.detail === 'string' ? s.detail : '') + '</td></tr>'; });
+    html += '</tbody></table>';
+
+    html += '<h3>Written to 1_customer</h3><table><thead><tr><th>Field</th><th>Cell</th><th>Value</th></tr></thead><tbody>';
+    w.written.forEach(function (x) { html += '<tr><td>' + esc(x.key) + '</td><td class="mono">' + esc(x.a1) + '</td><td>' + esc(String(x.value)) + '</td></tr>'; });
+    html += '</tbody></table>';
+    if (w.missingRanges.length) html += '<p class="bad">Named ranges not found in the copy: ' + esc(w.missingRanges.join(', ')) + '. Those values were not written.</p>';
+
+    html += '<h3>Read back through Customer.read</h3>';
+    if (w.readback.healed.length) html += '<p>Named ranges healed from labels: ' + esc(w.readback.healed.join(', ')) + '</p>';
+    if (w.readback.unresolved.length) html += '<p class="bad">Unresolved: ' + esc(w.readback.unresolved.map(function (u) { return u.key; }).join(', ')) + '</p>';
+    html += '<pre>' + esc(JSON.stringify(w.readback.values, null, 2)) + '</pre>';
+
+    html += '<h3>Preflight</h3><p class="' + (w.preflight.ok ? 'ok' : 'bad') + '">' + esc(w.preflight.message) + '</p>';
+
+    if (r.pack && r.pack.message) {
+      html += '<h3>Field pack</h3><p class="' + (r.pack.applied ? 'ok' : 'bad') + '">' + esc(r.pack.message) + '</p>';
+      if (r.pack.warnings && r.pack.warnings.length) html += '<pre>' + esc(r.pack.warnings.join('\n')) + '</pre>';
+    }
+    html += '<h3>Registry</h3><p>' + esc(r.registry.mode) + ' — state “' + esc(r.registry.state) + '”' + (r.registry.workspaceKey ? ', workspace ' + esc(r.registry.workspaceKey) : '') + '</p>';
+
+    var el = document.getElementById('result'); el.innerHTML = html; el.hidden = false; el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function setStatus(t, isErr) { var s = document.getElementById('status'); s.textContent = t; s.className = 'status' + (isErr ? ' err' : ''); }
+  function fail(e) { setStatus(e && e.message ? e.message : String(e), true); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+</script>
+</body>
+</html>
