@@ -81,7 +81,7 @@
 <main>
   <header>
     <h1 id="title">Implementations</h1>
-    <nav><a href="#list" id="navList">Workspaces</a><a href="#new" id="navNew">New implementation</a></nav>
+    <nav><a href="#" id="navList" data-view="list">Workspaces</a><a href="#" id="navNew" data-view="new">New implementation</a></nav>
   </header>
   <p class="lede" id="lede"></p>
   <div class="context" id="context">Loading…</div>
@@ -125,11 +125,11 @@
         </div>
       </fieldset>
       <div class="actions">
-        <button class="primary" id="create" type="button">Create workbook</button>
-        <button class="quiet" id="createClaim" type="button" hidden>Create and claim a workspace</button>
+        <button class="primary" id="create" type="button">Create workbook (not linked)</button>
+        <button class="quiet" id="createClaim" type="button" disabled title="Needs REGISTRY_MODE=live">Create and claim a workspace</button>
         <span class="status" id="status"></span>
       </div>
-      <div class="hint">Create workbook generates and fills the configuration only; a workspace can be claimed for it later from the Workspaces view.</div>
+      <div class="hint" id="createHint">“Create workbook (not linked)” generates and fills the configuration only; it appears under “Workbooks not yet linked” in the Workspaces view, where a workspace can be claimed for it later.</div>
     </form>
     <div class="panel" id="result" hidden></div>
   </section>
@@ -140,8 +140,10 @@
   var run = function () { return google.script.run.withFailureHandler(function (e) { setListStatus(e && e.message ? e.message : String(e), true); }); };
 
   // ---------- routing ----------
-  function route() {
-    var v = location.hash === '#new' ? 'new' : 'list';
+  var VIEW = 'list';
+  function route(v) {
+    VIEW = v || VIEW;
+    v = VIEW;
     document.getElementById('viewList').hidden = v !== 'list';
     document.getElementById('viewNew').hidden = v !== 'new';
     document.getElementById('navList').toggleAttribute('aria-current', v === 'list');
@@ -153,7 +155,9 @@
     if (v === 'list' && !ROWS.length && !UNCLAIMED.length) loadWorkspaces();
     if (v === 'new' && !SCHEMA) loadForm();
   }
-  window.addEventListener('hashchange', route);
+  document.querySelectorAll('nav a[data-view]').forEach(function (a) {
+    a.addEventListener('click', function (ev) { ev.preventDefault(); route(a.getAttribute('data-view')); });
+  });
 
   google.script.run.withSuccessHandler(function (c) {
     CTX = c;
@@ -168,7 +172,7 @@
     if (c.healthAvailable === false) warn.push('050_Health.js is not in the project; Check workbook will fail.');
     if (c.registryMode !== 'live') warn.push('Registry is in dry run: workbooks created here are listed below as unlinked; router actions, claiming and status are unavailable.');
     if (warn.length) { var n = document.getElementById('notice'); n.textContent = warn.join(' '); n.hidden = false; }
-    route();
+    route('list');
   }).withFailureHandler(function (e) { document.getElementById('context').textContent = e.message; }).getContext();
 
   // ---------- workspaces ----------
@@ -322,7 +326,7 @@
       g.fields.forEach(function (f) { fs.appendChild(renderField(f)); }); host.appendChild(fs);
     });
     document.getElementById('create').onclick = function () { submit(false); };
-    var cc = document.getElementById('createClaim'); cc.hidden = CTX.registryMode !== 'live'; cc.onclick = function () { submit(true); };
+    var cc = document.getElementById('createClaim'); cc.disabled = CTX.registryMode !== 'live'; cc.title = cc.disabled ? 'Claiming needs REGISTRY_MODE=live' : ''; cc.onclick = function () { submit(true); };
   }
   function renderField(f) {
     var wrap = document.createElement('div'); wrap.className = 'field';
@@ -363,8 +367,9 @@
     }
     var btns = [document.getElementById('create'), document.getElementById('createClaim')];
     btns.forEach(function (b) { b.disabled = true; }); setStatus(claim ? 'Creating workbook and claiming a workspace…' : 'Creating workbook…');
-    google.script.run.withSuccessHandler(function (r) { btns.forEach(function (b) { b.disabled = false; }); setStatus('Done.'); ROWS = []; UNCLAIMED = []; showResult(r); })
-         .withFailureHandler(function (e) { btns.forEach(function (b) { b.disabled = false; }); setStatus(e.message, true); })
+    var restore = function () { btns[0].disabled = false; btns[1].disabled = CTX.registryMode !== 'live'; };
+    google.script.run.withSuccessHandler(function (r) { restore(); setStatus('Done.'); ROWS = []; UNCLAIMED = []; showResult(r); })
+         .withFailureHandler(function (e) { restore(); setStatus(e.message, true); })
          .createImplementation({ customer: customer, pack: pack, claim: !!claim });
   }
   function showResult(r) {
@@ -380,8 +385,9 @@
             (r.registry.workspaceKey ? 'Linked to ' + esc(r.registry.workspaceKey) + ' (' + esc(r.registry.state) + ').'
                                      : 'Not linked to a workspace yet; claim one from the Workspaces view when ready.') +
             (r.registry.error ? ' Claim failed: ' + esc(r.registry.error) : '') + '</p>';
-    html += '<p><a href="#list">Back to workspaces</a></p>';
+    html += '<p><a href="#" id="backToList">Back to workspaces</a></p>';
     var el = document.getElementById('result'); el.innerHTML = html; el.hidden = false; el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('backToList').addEventListener('click', function (ev) { ev.preventDefault(); route('list'); });
   }
 
   // ---------- utils ----------
