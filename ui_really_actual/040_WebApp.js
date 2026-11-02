@@ -37,7 +37,11 @@ function getPackQuestions(fileId) {
     .map(function (q) { return { id: q.question_id, prompt: q.prompt, field: q.field, effect: q.effect }; });
 }
 
-/** form = { customer: {...}, pack?: { fileId, answers, mode } }. Create → pack → claim (live) or record (dry run). */
+/**
+ * form = { customer: {...}, pack?: { fileId, answers, mode }, claim?: boolean }
+ * Create → pack → record in the ledger → (only when form.claim) claim a workspace. A failed claim keeps the
+ * workbook, as "Claim workspace…" keeps a generated one, and the page shows why; the workbook can be claimed later.
+ */
 function createImplementation(form) {
   var cid = SDC.Util.newCorrelationId();
   var wb = Workbook.create({ customer: form.customer, correlationId: cid });
@@ -50,18 +54,20 @@ function createImplementation(form) {
     pack = { applied: r.ok, message: r.message, warnings: r.warnings || [], counts: r.data && r.data.counts };
   }
 
-  var reg;
-  try {
-    reg = Registry.recordCreated({ spreadsheetId: wb.spreadsheetId, url: wb.url, clientName: form.customer.clientName, correlationId: cid });
-  } catch (e) {
-    // The workbook is kept (claimWorkspace keeps a generated workbook too); the page shows why the claim failed.
-    reg = { mode: Registry.mode(), state: 'not claimed', workspaceKey: null, error: e.message };
+  var reg = Registry.recordCreated({ spreadsheetId: wb.spreadsheetId, url: wb.url, clientName: form.customer.clientName, correlationId: cid });
+  reg.mode = Registry.mode();
+  if (form.claim) {
+    try { Object.assign(reg, Registry.claim(wb.spreadsheetId, cid)); }
+    catch (e) { reg.error = e.message; }
   }
   return { workbook: wb, pack: pack, registry: reg };
 }
 
+/** Claim a workspace for a workbook created earlier (or any SDC config workbook by URL/ID). Live mode only. */
+function claimWorkbook(spreadsheetId) { return Registry.claim(extractSpreadsheetId_(spreadsheetId)); }
+
 // --- Workspaces -----------------------------------------------------------------------------------------------------
-function listWorkspaces()        { return { mode: Registry.mode(), rows: Registry.list() }; }
+function listWorkspaces()        { return { mode: Registry.mode(), rows: Registry.list(), unclaimed: Registry.listUnclaimed() }; }
 function getWorkspaceStatus(key) { return Registry.status(key); }
 function workspaceAction(op, key){ return Registry.action(op, key); }
 
