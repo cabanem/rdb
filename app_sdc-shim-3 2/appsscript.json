@@ -1,0 +1,38 @@
+{
+  "timeZone": "America/New_York",
+  "dependencies": {
+    "enabledAdvancedServices": [
+      {
+        "userSymbol": "Sheets",
+        "serviceId": "sheets",
+        "version": "v4"
+      }
+    ],
+    "libraries": [
+      {
+        "userSymbol": "SDC",
+        "libraryId": "1enO3vd4KIDCxRmnEMf6mbLVp11flh74jQ_AKx9FbhLkiDZz_Tu9Jp3_I",
+        "version": "0",
+        "developmentMode": true
+      }, 
+      {
+        "userSymbol": "DP",
+        "libraryId": "1KA1XLOSKdutdjWxixuHeMSQx458EBHNF4yNBdJ4N2SMHf3NejRF0MB22",
+        "version": "0",
+        "developmentMode": true
+      }
+    ]
+  },
+  "exceptionLogging": "STACKDRIVER",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/spreadsheets", 
+    "https://www.googleapis.com/auth/drive", 
+    "https://www.googleapis.com/auth/script.external_request", 
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/script.container.ui", 
+    "https://www.googleapis.com/auth/script.scriptapp",
+    "https://www.googleapis.com/auth/aiplatform",
+    "https://www.googleapis.com/auth/cloud-platform"
+  ],
+  "runtimeVersion": "V8"
+}

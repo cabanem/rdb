@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    /* Brand tokens live here. Swap for the org palette (navy / yellow / Tahoma) when you restyle. */
+    :root {
+      --fg: #202124; --fg-muted: #5f6368; --line: #e0e0e0;
+      --accent: #1a73e8; --accent-fg: #fff;
+      --done: #137333; --done-bg: #e6f4ea;
+      --warn: #b06000; --warn-bg: #fef7e0;
+      --err: #c5221f;  --err-bg: #fce8e6;
+      --chip-bg: #f1f3f4;
+    }
+    body { font: 13px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: var(--fg); margin: 0; padding: 12px 12px 72px; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+
+    .next { padding: 8px 10px; border-radius: 6px; background: var(--chip-bg); margin-bottom: 12px; font-size: 12px; }
+    .next b { display: block; font-size: 13px; }
+    .next.all { background: var(--done-bg); color: var(--done); }
+    .next.err { background: var(--err-bg); color: var(--err); }
+
+    .phase { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--fg-muted); margin: 14px 0 6px; }
+    .phase:first-of-type { margin-top: 0; }
+
+    .step { display: grid; grid-template-columns: 22px 1fr; gap: 0 8px; padding: 6px 0; }
+    .step + .step { border-top: 1px solid var(--line); }
+    .mark { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--fg-muted); color: var(--fg-muted);
+            font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; box-sizing: border-box; }
+    .todo .mark { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+    .done .mark { background: var(--done); border-color: var(--done); color: #fff; }
+    .blocked { opacity: .5; }
+    .title { font-weight: 500; }
+    .hint { color: var(--fg-muted); font-size: 12px; margin-top: 1px; }
+    .acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+    button, .chip { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+    button { border: 1px solid var(--line); background: #fff; color: var(--fg); }
+    button.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
+    button:hover:not(:disabled) { filter: brightness(.96); }
+    button:disabled { opacity: .5; cursor: default; }
+    .chip { border: 0; background: var(--chip-bg); color: var(--fg-muted); padding: 3px 8px; }
+    .chip:hover { color: var(--fg); }
+
+    .busy { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 12px; background: var(--warn-bg); color: var(--warn); font-size: 12px; display: none; }
+    .busy.on { display: block; }
+
+    .foot { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; border-top: 1px solid var(--line); padding: 8px 12px; font-size: 11px; color: var(--fg-muted); }
+    .foot .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .foot a { color: var(--accent); text-decoration: none; cursor: pointer; }
+    .foot label { display: flex; align-items: center; gap: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Data collection guide</h1>
+  <div id="next" class="next">Reading the workbook&hellip;</div>
+  <div id="steps"></div>
+
+  <div id="busy" class="busy"></div>
+  <div class="foot">
+    <div class="row">
+      <span id="ver"></span>
+      <a id="refresh">Refresh</a>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <span><a data-fn="assistOpen">Config assistant</a> &middot; <a data-fn="assistBuildDigest">Build corpus</a></span>
+      <label><input type="checkbox" id="auto"> open on start</label>
+    </div>
+  </div>
+
+  <script>
+    var $ = function (id) { return document.getElementById(id); };
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+    // --- render -----------------------------------------------------------
+    function render(st) {
+      var out = [], phase = null;
+      st.steps.forEach(function (s) {
+        if (s.phase !== phase) { phase = s.phase; out.push('<div class="phase">' + esc(phase) + '</div>'); }
+        out.push('<div class="step ' + esc(s.state) + '">');
+        out.push('<div class="mark">' + (s.state === 'done' ? '\u2713' : s.n) + '</div>');
+        out.push('<div><div class="title">' + esc(s.title) + '</div><div class="hint">' + esc(s.hint) + '</div></div>');
+        if (s.actions.length || s.tabs.length) {
+          out.push('<div class="acts">');
+          s.actions.forEach(function (a) {
+            out.push('<button data-fn="' + esc(a.fn) + '" data-label="' + esc(s.title) + '"' +
+              (a.primary ? ' class="primary"' : '') + (a.enabled ? '' : ' disabled') + '>' + esc(a.label) + '</button>');
+          });
+          s.tabs.forEach(function (t) {
+            out.push('<span class="chip" data-tab="' + esc(t) + '">open ' + esc(t) + '</span>');
+          });
+          out.push('</div>');
+        }
+        out.push('</div>');
+      });
+      $('steps').innerHTML = out.join('');
+
+      var n = $('next');
+      if (st.next) { n.className = 'next'; n.innerHTML = 'Next<b>' + esc(st.next) + '</b>'; }
+      else { n.className = 'next all'; n.textContent = 'Nothing pending. Edit the configuration and Update, or send invitations.'; }
+
+      $('ver').textContent = 'lib ' + esc(st.library) + ' \u00b7 schema ' + esc(st.schema);
+      $('auto').checked = !!st.autoOpen;
+    }
+
+    function fail(e) {
+      var n = $('next');
+      n.className = 'next err';
+      n.textContent = String(e && e.message || e);
+      busy(false);
+    }
+
+    function refresh() {
+      google.script.run.withSuccessHandler(function (st) { busy(false); render(st); }).withFailureHandler(fail).guideStatus();
+    }
+
+    // --- run an action ----------------------------------------------------
+    function busy(label) {
+      var b = $('busy');
+      b.className = 'busy' + (label ? ' on' : '');
+      b.textContent = label ? 'Running ' + label + '\u2026 any prompts open over the sheet.' : '';
+      Array.prototype.forEach.call(document.querySelectorAll('button'), function (x) {
+        if (label) { x.dataset.was = x.disabled ? '1' : ''; x.disabled = true; }
+        else if (x.dataset.was !== undefined) { x.disabled = x.dataset.was === '1'; }
+      });
+    }
+
+    function run(fn, label) {
+      busy(label || fn);
+      // The server function is one of the existing menu handlers; its alerts/modals show over the sheet,
+      // and the call returns when they close. Then re-read the workbook so the marks it left show up.
+      google.script.run.withSuccessHandler(refresh).withFailureHandler(fail)[fn]();
+    }
+
+    document.body.addEventListener('click', function (e) {
+      var el = e.target.closest('[data-fn],[data-tab]');
+      if (!el || el.disabled) return;
+      if (el.dataset.fn) run(el.dataset.fn, el.dataset.label);
+      else google.script.run.withFailureHandler(fail).guideActivate(el.dataset.tab);
+    });
+
+    $('refresh').addEventListener('click', function () { busy('refresh'); refresh(); });
+    $('auto').addEventListener('change', function () {
+      google.script.run.withFailureHandler(fail).guideSetAutoOpen($('auto').checked);
+    });
+
+    refresh();
+  </script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font: 13px/1.5 Arial, sans-serif; margin: 16px; color: #222; }
+      .meta { color: #555; margin: 8px 0 16px; }
+      .meta b { color: #222; }
+      button { font-size: 13px; padding: 8px 14px; cursor: pointer; }
+      .primary { background: #1a73e8; color: #fff; border: 1px solid #1a73e8; border-radius: 4px; }
+      .note { margin-top: 16px; padding: 10px; background: #fef7e0; border-radius: 4px; color: #5f4b00; }
+    </style>
+  </head>
+  <body>
+    <? var sheets = (meta.sheet_names || []).join(', ');
+       var kb = meta.byte_size ? (meta.byte_size / 1024).toFixed(1) + ' KB' : '?'; ?>
+
+    <div>Built from the current workbook configuration.</div>
+    <div class="meta">
+      <b>Fields: </b> <?= meta.field_count || '?' ?>,
+      <b>Rows: </b> <?= meta.row_count || '?' ?>,
+      <b>Size: </b> <?= kb ?><br>
+      <p>
+      <b>Sheets: </b> <?= sheets ?>
+    </div>
+
+    <button id="dl" class="primary">Download .xlsx</button>
+    <button onclick="google.script.host.close()">Close</button>
+
+    <div class="note">
+      Open the downloaded file in <b>Excel</b> to verify the dependent dropdowns.
+      Opening it in Google Sheets re-imports the file and won't reproduce the
+      <code>INDIRECT</code> / named-range behavior a supplier sees.
+    </div>
+
+    <script>
+      document.getElementById('dl').addEventListener('click', function () {
+        var btn = this; btn.disabled = true; btn.textContent = 'Preparing…';
+        google.script.run
+          .withSuccessHandler(function (res) {
+            if (!res || !res.b64) {
+              alert('Preview data expired — please run Preview again.');
+              btn.disabled = false; btn.textContent = 'Download .xlsx'; return;
+            }
+            var bin = atob(res.b64);
+            var arr = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            var blob = new Blob([arr],
+              { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url; a.download = res.name;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+            btn.disabled = false; btn.textContent = 'Download .xlsx';
+          })
+          .withFailureHandler(function (e) {
+            alert('Download failed: ' + e.message);
+            btn.disabled = false; btn.textContent = 'Download .xlsx';
+          })
+          .getPreviewBytes();
+      });
+    </script>
+  </body>
+</html>
