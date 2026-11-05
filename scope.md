@@ -140,11 +140,46 @@ When an analyst uploads existing (incumbent) data to pre-fill supplier templates
 
 ---
 
+## 9. Analyst user interface improvements
+
+**Request**
+Analysts work today through a configuration spreadsheet and a set of portal pages that are inconsistent and hard to read. They want to set up and run an implementation from a clear set of pages, without needing to understand how the spreadsheet is wired.
+
+**Proposed solution**
+- Move implementation set-up (client details, kickoff, supplier roster) from the configuration spreadsheet into a guided web page, starting from a reviewed field pack for the client's VMS and record type rather than a blank sheet.
+- Rebuild the analyst portal pages on one consistent pattern: every action gives a clear result message, next step, and links, in the same place every time.
+- Keep the configuration spreadsheet underneath as the record for now; the pages become the way analysts work with it.
+
+**Done when**
+- An analyst can set up a new implementation end to end from the web page, choosing a field pack and adjusting it, without opening the configuration spreadsheet.
+- Every analyst portal page uses the same feedback pattern, and tester feedback confirms analysts can tell what happened and what to do next after each action.
+- No implementation set up through the page needs developer intervention to correct configuration.
+
+---
+
+## 10. Analyst training on the phase 1 system
+
+**Request**
+Analysts need to understand what the platform does today and how to run an implementation on it confidently. Current knowledge lives with the developer and in notes written for the developer, and analysts either under-configure or over-configure as a result.
+
+**Proposed solution**
+- Produce a short, task-based analyst guide: set up an implementation, invite suppliers, review a submission, handle a failure, close out — written in the analyst's terms, not the system's.
+- Run hands-on sessions on a test implementation, where each analyst completes a full cycle with realistic data.
+- Capture the questions and mistakes from those sessions and feed them back into the guide and into item 9's page design.
+
+**Done when**
+- Every current analyst has completed one full implementation cycle on the test environment.
+- The analyst guide exists, is owned by the team, and a new analyst can run a standard implementation from it with no developer involvement.
+- The questions raised in training are logged and each has either an answer in the guide or an item on the backlog.
+
+---
+
 ## Author's notes (remove before circulating)
 
 - **Items 2, 3 and 4 depend on the task-model change** in item 1 (several tasks per supplier, each with its own lifecycle). A change request, a follow-up task after a template change, and a flagged-and-returned submission are all "a second task on an existing supplier." Sequence that foundation first; the one-pager can say so in one line.
 - **Item 3 is partly designed.** The per-submission flag and comments fields, and routing a flagged submission to the analyst ahead of the submission limit, are already in the plan of record. The new part is field-level flagging and the analyst's resolution step.
 - **Item 5 gets cheaper** if the form-channel-to-filled-spreadsheet rebuild lands, since that is what makes "same shape" hold for both submission channels. List it as a dependency rather than re-scoping it here.
+- **Items 9 and 10 are the adoption pair.** Item 10 (training) will surface exactly the confusions item 9 is meant to remove; run them close together and let the training log drive the page design. Decide the order deliberately — training on the old set-up then re-training on the new page is wasteful if item 9 is close.
 - **Item 8 is further along than it reads.** Seed validation exists in the connector today (roster checks, unknown supplier names, empty-roster handling); the gap is the analyst-facing half. Frame it as "finish and expose," not "build."
 - **Items 7 and 8 share a boundary worth stating once:** master data is what the *client* supplies to define the allowed lists; seed data is what the *analyst* supplies to pre-fill supplier answers. Item 7 defines the values; item 8 is checked against them.
 - **Open question from the SOW discussion:** whether "data validation for SOW" means reusing existing rules or new SOW-specific rules (rates against milestones, dates against project windows). Rate validation may be part of the SOW story — keep them as linked items with one shared discovery rather than merging prematurely.
