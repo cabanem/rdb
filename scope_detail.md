@@ -23,7 +23,7 @@ The platform's existing building blocks — templates generated from configurati
 - One pilot SOW engagement end to end.
 
 **Out of scope**
-- New SOW-specific validation rules (rates against milestones, dates against project windows) — pending discovery; see item 9 note.
+- New SOW-specific validation rules (rates against milestones, dates against project windows) — pending discovery; see item 11 note.
 - Any change to how MSP implementations run; they must behave exactly as today.
 - Milestone or project scheduling logic (the platform collects data about milestones; it does not plan them).
 
@@ -241,6 +241,69 @@ Much of the checking already exists in the platform; this item makes it visible 
 
 ---
 
-## 9. Note on rate validation
+## 9. Analyst user interface improvements
+
+### Proposed solution — detail
+
+Setting up an implementation today means filling in a configuration spreadsheet correctly — client details, fields, validations, lookup lists, suppliers and contacts — and triggering set-up from it. The spreadsheet is powerful but opaque: analysts can't easily tell what each setting does, so some leave things blank and get unformatted data, while others over-specify and get unnecessary failures. The portal pages the analyst uses afterwards grew up one at a time and behave differently from each other.
+
+The proposal has two parts. First, a guided set-up page replaces the blank spreadsheet as the starting point. The analyst picks a reviewed field pack for the client's VMS and record type — a pre-built, sensible configuration — then enters client details and adjusts only what is specific to this implementation. The page creates and populates the configuration for them and shows the status of each implementation in one place. Early work on this page exists and is in use for client details and workspace status.
+
+Second, the analyst portal pages are rebuilt on one shared pattern: each action returns a clear result (what happened, any details, links to the files involved, and the recommended next step) in the same panel on every page. Two pages are already on this pattern; the remaining pages are brought in line.
+
+The configuration spreadsheet stays underneath as the record for now. Analysts stop editing it directly; the pages do that on their behalf.
+
+### Scope
+
+**In scope**
+- Guided set-up page: client details, field-pack selection and adjustment, supplier roster, kickoff.
+- Field packs for the VMS types in current use, with a process for adding new ones.
+- Implementation status view (which implementations exist, where each is up to, health of its configuration).
+- Consistent result-and-next-step feedback across all analyst portal pages.
+
+**Out of scope**
+- Replacing the configuration spreadsheet as the system of record (a separate decision, dependent on database approval).
+- Supplier-facing page changes (the supplier submission page follows later on the same pattern, but is not part of this item).
+- Analyst self-service for new validation rule types; packs cover the common configurations, and unusual rules are still configured with developer support.
+
+**Assumptions and dependencies**
+- Analysts must never work in or contend over a shared configuration; each implementation keeps its own.
+- Field packs are reviewed by an analyst with VMS knowledge before use; the first pack exists, a second is planned.
+- Item 10 (training) tests this page design with real analysts and feeds back into it.
+
+---
+
+## 10. Analyst training on the phase 1 system
+
+### Proposed solution — detail
+
+The platform's phase 1 capability is ahead of the analysts' understanding of it. Knowledge of how to configure and run an implementation sits with the developer and in notes written for the developer. Analysts have learned by example and by trial, which shows up as inconsistent configuration and reluctance to rely on the system.
+
+The proposal treats training as a deliverable with an owner, not an afterthought. A short analyst guide is written around the tasks an analyst actually does — set up an implementation, invite suppliers, chase non-responders, review a submission, handle a failed one, add a late supplier, close out — each as a page or two in plain language with screenshots. It deliberately avoids explaining how the platform works internally.
+
+Each analyst then runs a complete implementation on a test environment with realistic sample data, in a facilitated session, from set-up to close-out. The questions, hesitations and mistakes from these sessions are logged. Each one becomes either a clarification in the guide, a change to the pages in item 9, or a backlog item — so training improves the product as well as the users.
+
+The guide and the test implementation become the standard onboarding for any new analyst joining the team.
+
+### Scope
+
+**In scope**
+- A task-based analyst guide for the phase 1 system, owned by the team after handover.
+- A reusable test implementation with sample client, supplier and seed data.
+- Facilitated hands-on sessions for all current analysts.
+- A log of training questions, each resolved into the guide, item 9, or the backlog.
+
+**Out of scope**
+- Training on phase 2 features; those are trained as they are delivered.
+- Developer or maintainer documentation (separate workstream).
+- Supplier-facing guidance (a supplier quick-start may be a later item).
+
+**Assumptions and dependencies**
+- Training is run on the phase 1 system as it stands, before item 9 changes the set-up experience; the guide is then revised when item 9 lands. (If item 9 lands first, train on the new pages instead — the decision depends on sequencing.)
+- Analyst time for the sessions is agreed with their managers.
+
+---
+
+## 11. Note on rate validation
 
 Rate validation is on the register but is not framed here, because its shape is still open: the team's current preference is a supplier-facing rate calculator rather than a validation rule, and it may turn out to be part of the SOW story (rates against milestones) rather than a standalone item. The recommendation is one timeboxed discovery covering both questions, with scope confirmed at the following checkpoint, rather than committing to a definition now.
