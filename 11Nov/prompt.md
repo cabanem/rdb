@@ -1,76 +1,84 @@
-# Task: add "Supplier manager email" to 1_customer and carry it through to the provision payload
+# Task: pick the customer logo from Drive instead of pasting a public link
 
 ## Context
 Read first:
-1. docs/architecture.md — §2 (Apps Script tier) and §5.1–5.2 (workbook → router → client collection)
-2. docs/invariants.md — "Configuration and provisioning"
-3. docs/generated/api-contracts.md — the `POST /provision` (API-00) request body; note the customer
-   attributes it carries today (`client_name`, `analyst_email`, `expected_date`, `target_vms`,
-   `reminder_days`, `customer_logo_url`)
+1. docs/architecture.md — §2 (Apps Script tier), §5.1–5.2 and §5.4 (Google Drive as a file hand-off)
+2. docs/invariants.md — "Configuration and provisioning", "Platform constraints"
+3. docs/generated/api-contracts.md — `POST /provision` (API-00): `customer_logo_url` is the field this replaces
+4. lib_drive-picker/README.js in full — especially §1 (why it is built this way), §5 (consuming it), §6 (origin
+   registration), §8 (gotchas)
 
 Source in this repo:
-- lib_sdc (library; identifier `SDC` in consumers): <path>
+- lib_sdc (library; identifier `SDC`): <path>
 - bound_sdc-shim: <path>
 - app_sdc-router (hosts the kickoff web app): <path>
-- master_config template Sheet: <URL or ID> — I edit the template by hand from your instructions
+- lib_drive-picker (DrivePicker library + picker helper web app): <path>
+- reference host integration from Contract Intake (host/INTEGRATION.md, Intake.gs `importPicked` shim): <path>
 
-Scope: the Apps Script side only. The Workato side (API-00 request schema, PRV-01, the Project
-table, the Functional core connector) is a separate change; your last deliverable is the handoff for it.
+Read `VERSION` from lib_drive-picker/Code.js; the folder name and the code may disagree. Picker-helper
+deployment facts (its /exec URL, `PICKER_ALLOWED_ORIGINS`, `PICKER_API_KEY`) are mine to supply; ask for them.
+
+Scope: Apps Script only. The Workato side (fetching the picked file and publishing a displayable URL) is a
+separate change; your last deliverable is the handoff for it.
 
 ## The change
-Add one implementation attribute to `1_customer`:
-- Label (column C): `Supplier manager email`
-- Position: the row directly below `Customer logo public link` (confirm the exact current label
-  from the template and the registry; use whatever the registry calls it)
-- Type: email address. Validation: the same rule as the analyst email.
-- Required: <yes | no>  (default: optional; an empty value is sent as empty, not omitted)
-- Purpose: transported to Workato on provision. Nothing in the workbook consumes it.
+Today the analyst finds a public URL for the customer logo and pastes it into the `Customer logo public link`
+row of `1_customer`; it travels as `customer_logo_url`. Replace that with a Drive picker:
 
-"Full integration" means every place the existing seven attributes are known. Find those places by
-tracing how `customer_logo_url` flows from its cell to the `/provision` body, then make the new field
-flow the same way. I expect at least:
-1. lib_sdc `CUSTOMER_FIELDS` registry entry: label, named range, wire name, type, validation,
-   required flag, help text
-2. a named range for the value cell — created by the migration step and present in the template
-3. a schema bump and a new `MIGRATION_CHAIN` step that inserts the row (never overwrites a row),
-   writes the label, creates the named range, and re-stamps the schema version on an existing
-   workbook; it must be idempotent
-4. the config export: the `_customer` block gains the field
-5. the provision payload (`Provision.run` / `Config.build`): the field is sent on `/provision`;
-   payload version bumped per the repo's convention (additive → I expect a minor bump)
-6. pre-send validation: email format, plus the required rule if chosen, with Result-contract messages
-7. the kickoff web app: the form renders the new field from the registry; the create-workbook path
-   writes it; the Workspaces view and workbook health check, if they list customer attributes
-8. the shim: expect no change unless a wrapper enumerates fields — confirm
-9. START_HERE and sidebar help text: one line describing the field
-10. tests: registry shape, migration (fresh template and already-migrated workbook), export shape,
-    payload shape
+- The analyst clicks a "Choose logo from Drive" control, picks an image file from their own Drive (My Drive,
+  Shared with me, Shared drives), and is done. No sharing settings, no public links.
+- `lib_sdc` receives the pick, downloads it with the visitor's token (`DrivePicker.fetchPicked`), checks it is an
+  image under a size cap, and lands a **copy** in the engagement's Drive folder — the same place and the same
+  sharing to the integration principal that the config JSON export uses today. Find that code path and reuse it;
+  do not invent a second sharing mechanism.
+- The copy's Drive link is written into the `1_customer` cell (one row on the sheet, as now). The row label
+  becomes `Customer logo` (it is no longer a public link); the registry entry gets the new label and help text.
+- On the wire, the export's `_customer` block and the `/provision` body carry the copy's **file ID** and its
+  **Drive link**. Proposed names: `customer_logo_file_id`, `customer_logo_drive_url`. Keep `customer_logo_url`
+  as an optional, deprecated field for now so this ships before the Workato side changes (additive → minor
+  payload bump). Registry keys follow the camelCase convention for `_customer.values`; wire keys snake_case.
+- Fallback without the picker: a pasted Drive link in the cell is accepted; `lib_sdc` resolves the ID, verifies
+  the integration principal can read the file (copy-and-share it if not), and proceeds. Validate reports a
+  clear message when the file is not an image, too large, or unreadable by the principal.
 
-Wire name: follow the convention the other attributes use. My expectation is `supplier_manager_email`.
-Use the same name in `_customer` and in the `/provision` body.
+## Design decisions to investigate and recommend (before building)
+1. **Where the picker UI lives.** Candidates: (a) the kickoff web app in app_sdc-router — a full page and one
+   script project, so one origin to allow-list; (b) a modal dialog opened from the shim sidebar (sidebar itself
+   is ~300 px wide, too narrow for the overlay); (c) the sidebar directly. Verify whether HtmlService origins
+   are per script project (README §6 says so); if they are, every bound shim is its own origin and (b)/(c) mean
+   registering an origin per workbook. My expectation: (a) as the primary host, the pasted-link fallback in the
+   workbook. If you believe (b) is workable, say what the origin story is.
+2. **Where the DrivePicker dependency lives.** `lib_sdc` depending on DrivePicker (one place; hosts only need
+   SDC plus a `google.script.run` shim) versus each host depending on it. Check that a library-of-a-library works
+   with the shim's pinned-version discipline and what the added `drive.file` scope does to existing
+   authorisations (every analyst re-authorises once?).
+3. **Configuration.** One value, the helper's /exec URL, under a `picker` category — in `_developer_settings`
+   for a linked workbook and Script Properties otherwise, following how `router.*` is stored. Presence of the
+   value is the switch, as in Contract Intake.
+4. **Image checks.** Allowed MIME types, size cap, and whether to normalise (no — leave rendering to the
+   Workato side; say so).
 
 ## Constraints
-- The constraints from docs/handoffs/2026-11-09-sidebar-validate-preview.md apply unchanged: shim
-  thin, logic in lib_sdc, keep the Result / Stage.run / Log.forCorrelation patterns, the repo's own
-  test and deployment methods.
-- Read schema, library and payload versions from the code. Schema 1.11 / lib 1.12.0 may already be
-  reserved for the 5_lookups primary-key removal; check whether that migration step exists. If it
-  does, this change takes the next numbers. Never reuse a schema number.
-- Do not touch the other seven attributes or their wire names (the `customer.*` rename is on hold).
-- `config_fingerprint` covers `_customer`, so the first re-provision after migration will create a
-  new version rather than answer `unchanged`. That is acceptable; state it in the handoff.
-- Template edits are mine to make: give me exact cell-by-cell instructions and the named-range name,
-  or make the migration step runnable against the template and tell me to run it there.
+- Same constraints as the two earlier handoffs: shim thin, logic in `lib_sdc`, Result / Stage.run /
+  Log.forCorrelation patterns, the repo's own tests and deployment method, versions read from code.
+- Schema bump with a migration step (label change on an existing row, help text, named range unchanged);
+  idempotent; works on a workbook that still holds a public URL in the cell (treat it as the legacy field, keep
+  sending it as `customer_logo_url`, do not fail Validate on it).
+- Do not change the other customer attributes. Do not push the picked bytes to Workato; only the ID and link.
+- `google.script.run` cannot reach library functions: every host gets one global shim per entry point.
+- The connector's grid-fallback label map on the Workato side keys on the row label; the handoff must carry the
+  new label.
 
 ## Working method
-1. Investigate and report: every file and function where the existing attributes are known (the
-   `customer_logo_url` trace), current versions, your proposed wire name, version bumps and migration
-   step, and anything in my list above that does not exist in the code. Stop and wait for approval.
-2. Implement with tests. One commit.
-3. Hand back: diff summary; version bumps and the shim manifest dependency change; template
-   instructions; a manual test (new workbook from the template; an old workbook migrated; the
-   field visible in the exported JSON and in the `/provision` body); and a Workato-side handoff that
-   names the field, its type and requiredness, where it appears (`_customer` in the export JSON and
-   the `/provision` body), the new payload_version, and what must change to accept it: API-00 request
-   schema, PRV-01's Project write, the Project table column, and the Functional core connector if it
-   validates `_customer` keys.
+1. Investigate and report: the `customer_logo_url` trace (cell → registry → export → payload), the config-export
+   landing-and-sharing code path you will reuse, your answers to the four decisions, the origin verification
+   result, and the file list. Stop for approval.
+2. Implement with tests (registry, migration on both legacy and fresh workbooks, export and payload shape,
+   pasted-link fallback, image checks). One commit per project touched.
+3. Hand back: diff summary; version bumps and manifest changes for shim and kickoff app; helper deployment
+   steps I must do (allow-list entries, library version to pin); template instructions; a manual test
+   (pick in the kickoff app → cell holds the link → Validate passes → `/provision` body shows id and link;
+   pasted-link fallback; a workbook still holding a public URL); and the Workato-side handoff: the new fields,
+   the deprecation of `customer_logo_url`, the new row label for `customer_label_map`, and what Workato must do
+   to turn the file ID into a displayable URL (fetch via the Drive connection as UTL-13 does, publish, write
+   the URL to Project.customer_logo_url / IMAGE_PUBLIC_URL_CLIENT).
