@@ -8,6 +8,7 @@ What it changes (2026-11-11):
   3. customer_label_map  : + "supplier manager email", "customer logo" (the uploaded-file row);
                            "customer logo public link" kept for legacy workbooks.
   4. New method drive_file_id_from_link (file ID from any Drive link shape, or a bare ID).
+  4b. Primary `_customer.values` path: warning for registry keys this side does not map (drift net).
   5. Grid fallback       : the logo row counts whichever label it carries; supplier manager email is optional,
                            so neither produces a "No row labelled" warning.
   6. Emitted customer hash: + supplier_manager_email, customer_logo_file_id (derived from the link when absent),
@@ -16,17 +17,22 @@ What it changes (2026-11-11):
   8. validate_config     : email check covers supplier_manager_email; customer_logo_url_shape is labelled legacy;
                            new warn-level check customer_logo_file_reference.
 
-Usage (Git Bash on the dev VM):
-    python apply_functional_core_patch.py path/to/functional_core.rb --check   # dry run: reports which anchors match
-    python apply_functional_core_patch.py path/to/functional_core.rb           # applies; writes <file>.bak first
+Usage (Git Bash on the dev VM; `py -3` if `python` is not on this shell's PATH):
+    py -3 apply_functional_core_patch.py path/to/functional_core.rb --check   # dry run: shows what would change
+    py -3 apply_functional_core_patch.py path/to/functional_core.rb           # applies; writes <file>.bak first
 
-Every edit is an exact-text replacement on a unique anchor. If any anchor is missing or ambiguous the script
-stops before writing and names the edit, so a file that has drifted from the 2026-11-11 text is never half-patched.
-Trailing whitespace is stripped from every line before matching (harmless in Ruby) so a copy-paste that lost or
-gained trailing spaces still matches.
+Two kinds of edit:
+  - exact : an anchor block of text, replaced in place. Runs of spaces/tabs match loosely, so alignment
+            differences do not break a match; the words must match.
+  - block : a method lambda located by name (`<name>: lambda do`) and replaced, together with the comment lines
+            directly above it, through its closing `end,` — whatever the body currently holds. --check prints
+            the exact lines that would be replaced.
+If any edit cannot be located, or is found more than once, nothing is written and the edit is named.
+Trailing whitespace is stripped from every line before matching (harmless in Ruby).
 """
 
 import io
+import re
 import shutil
 import sys
 
@@ -34,7 +40,11 @@ EDITS = []
 
 
 def edit(name, old, new):
-    EDITS.append((name, old.strip("\n"), new.strip("\n")))
+    EDITS.append(("exact", name, old.strip("\n"), new.strip("\n")))
+
+
+def block(name, start_marker, new):
+    EDITS.append(("block", name, start_marker, new.strip("\n")))
 
 
 # ---------------------------------------------------------------------------- 1. description
@@ -52,50 +62,20 @@ edit(
                "landed); 5_lookups has no primary-key column.",
 ''')
 
-# ---------------------------------------------------------------------------- 2 + 3 + 4. key map, label map, helper
-edit(
-    "customer_key_map + customer_label_map + drive_file_id_from_link",
+# ---------------------------------------------------------------------------- 2. customer_key_map (structural)
+block(
+    "customer_key_map (replace lambda)",
+    "customer_key_map: lambda do",
     r'''
-    # Schema 1.10 (library 1.11.0): 1_customer is exactly the seven implementation attributes. The six seed-data
-    # keys and the two supplier-messaging keys left at 1.9; applicationName, outputDriveFolderId and
-    # lastDayForSubmission left at 1.10; customerLogoUrl arrived. Seeding is configured in the portal now
-    # (validate_seed takes index_key from its caller), so none of the retired keys has a reader on this side.
-    customer_key_map: lambda do
-      {
-        "clientName"      => "client_name",
-        "analystEmail"    => "analyst_email",
-        "targetVms"       => "target_vms",
-        "reminderDays"    => "reminder_days",
-        "expectedDate"    => "expected_date",
-        "variantCount"    => "variant_count",
-        "customerLogoUrl" => "customer_logo_url"
-      }
-    end,
-
-    # Grid-fallback only: 1_customer label (downcased, schema 1.10 wording) -> registry key.
-    # Mirrors Labels in 003_Schema.js. Feeds customer_key_map above.
-    customer_label_map: lambda do
-      {
-        "analyst email address"     => "analystEmail",
-        "customer name"             => "clientName",
-        "customer logo public link" => "customerLogoUrl",
-        "expected completion date"  => "expectedDate",
-        "reminder cadence"          => "reminderDays",
-        "target vms"                => "targetVms",
-        "variant count"             => "variantCount"
-      }
-    end,
-''',
-    r'''
-    # Schema 1.10 (library 1.11.0): 1_customer is exactly the seven implementation attributes. The six seed-data
-    # keys and the two supplier-messaging keys left at 1.9; applicationName, outputDriveFolderId and
-    # lastDayForSubmission left at 1.10; customerLogoUrl arrived. Seeding is configured in the portal now
-    # (validate_seed takes index_key from its caller), so none of the retired keys has a reader on this side.
+    # ── Customer sheet parser ─────────────────
+    # CUSTOMER_FIELDS registry key (as emitted in `_customer.values`) -> connector key. ONE place to flip when a
+    # wire-name rename is decided.
     #
-    # After 1.10 (Nov 2026): supplierManagerEmail (eighth row, invited to the portal's Supplier managers group by
-    # PRV-01 / API-04) and the uploaded logo. The logo row now holds the Drive link lib_sdc wrote after the analyst
-    # uploaded the image; the library sends it as customerLogoDriveUrl and, when it has it, customerLogoFileId.
-    # customerLogoUrl is the legacy public link and stays mapped until the Workato side stops reading it.
+    # Schema 1.10 (library 1.11.0): the seven implementation attributes. After 1.10 (Nov 2026): supplierManagerEmail
+    # (eighth row; invited to the portal's Supplier managers group by PRV-01 / API-04) and the uploaded logo — the
+    # logo row holds the Drive link lib_sdc wrote after the analyst uploaded the image; the library sends it as
+    # customerLogoDriveUrl and, when it has it, customerLogoFileId. customerLogoUrl is the legacy public link and
+    # stays mapped until the Workato side stops reading it.
     customer_key_map: lambda do
       {
         "clientName"           => "client_name",
@@ -110,10 +90,16 @@ edit(
         "supplierManagerEmail" => "supplier_manager_email"
       }
     end,
+''')
 
-    # Grid-fallback only: 1_customer label (downcased) -> registry key.
-    # Mirrors Labels in 003_Schema.js. Feeds customer_key_map above. Two labels exist for the logo row: the legacy
-    # "Customer logo public link" and the "Customer logo" row that holds the uploaded file's Drive link.
+# ---------------------------------------------------------------------------- 3 + 4. customer_label_map (structural) + helper
+block(
+    "customer_label_map (replace lambda) + drive_file_id_from_link (inserted after it)",
+    "customer_label_map: lambda do",
+    r'''
+    # Grid-fallback only: 1_customer label (downcased) -> registry key. Mirrors Labels in 003_Schema.js. Feeds
+    # customer_key_map above. Two labels exist for the logo row: the legacy "Customer logo public link" and the
+    # "Customer logo" row that holds the uploaded file's Drive link.
     customer_label_map: lambda do
       {
         "analyst email address"     => "analystEmail",
@@ -368,6 +354,46 @@ def normalize(text):
     return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
 
 
+def loose_pattern(anchor):
+    """Regex for an anchor block where every run of spaces/tabs matches any run of spaces/tabs."""
+    lines = []
+    for line in normalize(anchor).split("\n"):
+        pieces = re.split(r"[ \t]+", line)
+        lines.append(r"[ \t]+".join(re.escape(p) for p in pieces))
+    return "\n".join(lines)
+
+
+def apply_exact(text, name, old, new):
+    hits = list(re.finditer(loose_pattern(old), text))
+    if len(hits) == 1:
+        return text[:hits[0].start()] + normalize(new) + text[hits[0].end():], None
+    if not hits:
+        return text, f"MISSING   {name}: anchor text not found"
+    return text, f"AMBIGUOUS {name}: anchor text found {len(hits)} times"
+
+
+def apply_block(text, name, marker, new, check_only):
+    lines = text.split("\n")
+    idx = [i for i, l in enumerate(lines) if marker in l]
+    if len(idx) != 1:
+        return text, f"{'MISSING  ' if not idx else 'AMBIGUOUS'} {name}: marker '{marker}' found {len(idx)} times"
+    i = idx[0]
+    indent = len(lines[i]) - len(lines[i].lstrip())
+    j = next((k for k in range(i + 1, len(lines))
+              if lines[k].strip() == "end," and len(lines[k]) - len(lines[k].lstrip()) == indent), None)
+    if j is None:
+        return text, f"MISSING   {name}: no closing 'end,' after the marker"
+    top = i
+    while top > 0 and lines[top - 1].lstrip().startswith("#"):   # take the comment block above with it
+        top -= 1
+    if check_only:
+        print(f"           will replace lines {top + 1}-{j + 1}:")
+        for l in lines[top:j + 1]:
+            print("           | " + l)
+    lines[top:j + 1] = normalize(new).split("\n")
+    return "\n".join(lines), None
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     check_only = "--check" in sys.argv
@@ -377,34 +403,31 @@ def main():
     path = args[0]
 
     with io.open(path, "r", encoding="utf-8") as fh:
-        original = fh.read()
-    text = normalize(original)
+        text = normalize(fh.read())
 
     problems = []
-    for name, old, new in EDITS:
-        old_n, new_n = normalize(old), normalize(new)
-        n = text.count(old_n)
-        if n == 1:
-            text = text.replace(old_n, new_n)
-            print(f"ok       {name}")
-        elif n == 0:
-            problems.append(f"MISSING  {name}: anchor text not found")
+    for kind, name, old, new in EDITS:
+        if kind == "exact":
+            text, problem = apply_exact(text, name, old, new)
         else:
-            problems.append(f"AMBIGUOUS {name}: anchor text found {n} times")
+            text, problem = apply_block(text, name, old, new, check_only)
+        if problem:
+            problems.append(problem)
+        else:
+            print(f"ok        {name}")
 
     if problems:
-        print("\n".join(problems))
-        print("\nNothing written. The connector text differs from the 2026-11-11 copy at the places above; "
-              "apply those edits by hand from the EDITS in this script.")
+        print("\n" + "\n".join(problems))
+        print("\nNothing written. Apply the named edit(s) by hand from the EDITS in this script, then re-run.")
         sys.exit(1)
 
     if check_only:
-        print("\n--check: all anchors match; run again without --check to apply.")
+        print("\n--check: all edits locate cleanly; run again without --check to apply.")
         return
 
     shutil.copyfile(path, path + ".bak")
     with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(text + ("\n" if not text.endswith("\n") else ""))
+        fh.write(text if text.endswith("\n") else text + "\n")
     print(f"\nwritten {path} (backup at {path}.bak)")
 
 
