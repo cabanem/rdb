@@ -1,0 +1,637 @@
+# ===== 1-push-now: original -> steps 4, 5, 6 =====
+--- a/lib_sdc-9/003_Payload.js
++++ b/lib_sdc-9/003_Payload.js
+@@ -47,6 +47,8 @@
+  * @param {string}   [args.customerLogoDriveUrl=''] - Its Drive link (https://drive.google.com/file/d/<id>/view), or '' (12.2).
+  * @param {string}   [args.customerLogoUrl='']      - DEPRECATED legacy public http(s) URL of the logo, or ''. Set only when the
+  *                                                    workbook still holds a public link instead of an uploaded file.
++ * @param {string}   [args.customerLogoMimeType=''] - 'image/png' | 'image/jpeg' for an uploaded logo, read from the file's bytes
++ *                                                    by Logo.resolve; '' for a legacy public URL or no logo (12.3).
+  * @param {string}   [args.supplierManagerEmail=''] - Client-side supplier manager's address, or ''. Shape-checked by Preflight 5f (12.1).
+  * @param {string}   args.configFileId          - The workbook (Spreadsheet) ID.
+  * @param {string}   args.configJsonFileId      - Drive ID of the serialized config JSON (Drive.serializeConfig).
+@@ -75,6 +77,7 @@
+     customer_logo_file_id:   args.customerLogoFileId || '',
+     customer_logo_drive_url: args.customerLogoDriveUrl || '',
+     customer_logo_url:       args.customerLogoUrl || '',
++    customer_logo_mime_type: args.customerLogoMimeType || '',
+     supplier_manager_email: args.supplierManagerEmail || '',
+     config_file_id:       args.configFileId,
+     drive_id_config_json: args.configJsonFileId,
+--- a/lib_sdc-9/004_Customer.js
++++ b/lib_sdc-9/004_Customer.js
+@@ -91,6 +91,40 @@
+ };
+ 
+ /**
++ * Required fields that are blank, by the registry's rules. The one definition of "blank": Preflight 5b throws on it,
++ * and a host can show it without running Preflight (the guide sidebar's "Describe the client" step).
++ * Presence only. Shape checks (date, cadence tokens, email, pick lists) stay in Preflight.
++ *
++ * @param {{values: Object, raw: Object}} read - Customer.read output.
++ * @returns {Array<{key: string, friendly: string, type: string}>} in registry order; [] when nothing is missing.
++ */
++Customer.missingRequired = function (read) {
++  var out = [];
++  CUSTOMER_FIELDS.forEach(function (def) {
++    if (!def.required) return;
++    var v = read.values[def.key];
++    var blank;
++    switch (def.type) {
++      case 'intList':
++        blank = v.ints.length === 0 && v.invalid.length === 0;
++        break;
++      case 'date': {
++        var rd = read.raw[def.key];
++        blank = rd === null || rd === undefined || rd === '';
++        break;
++      }
++      case 'bool':
++        blank = false;  // booleans coerce blank -> false; never "missing"
++        break;
++      default:
++        blank = v === null;
++    }
++    if (blank) out.push({ key: def.key, friendly: def.friendly, type: def.type });
++  });
++  return out;
++};
++
++/**
+  * Idempotently create named ranges for every registered field whose label can be located. Called by the 1.3 -> 1.4
+  * migration; safe to also call best-effort from the container's onOpen shim.
+  *
+--- a/lib_sdc-9/005_Preflight.js
++++ b/lib_sdc-9/005_Preflight.js
+@@ -123,28 +123,8 @@
+     }
+ 
+     // 5b. Required-but-blank (registry-driven)
+-    var missingFields = [];
+-    CUSTOMER_FIELDS.forEach(function (def) {
+-      if (!def.required) return;
+-      var v = customerData[def.key];
+-      var blank;
+-      switch (def.type) {
+-        case 'intList':
+-          blank = v.ints.length === 0 && v.invalid.length === 0;
+-          break;
+-        case 'date': {
+-          var rd = read.raw[def.key];
+-          blank = rd === null || rd === undefined || rd === '';
+-          break;
+-        }
+-        case 'bool':
+-          blank = false;  // booleans coerce blank -> false; never "missing"
+-          break;
+-        default:
+-          blank = v === null;
+-      }
+-      if (blank) missingFields.push(def.friendly);
+-    });
++    //     The rule for "blank" lives in Customer.missingRequired, shared with the guide sidebar.
++    var missingFields = Customer.missingRequired(read).map(function (m) { return m.friendly; });
+     if (missingFields.length > 0) {
+       throw new Error(
+         'Required customer fields missing in the ' + config.sheets.customer + ' tab: ' +
+@@ -225,6 +205,7 @@
+     customerData.customerLogoFileId   = logo.fileId;
+     customerData.customerLogoDriveUrl = logo.driveUrl;
+     customerData.customerLogoUrl      = logo.legacyUrl;
++    customerData.customerLogoMimeType = logo.mimeType;      // payload 12.3: from the file's bytes (Logo.resolve)
+   }
+ 
+   return Object.assign({
+--- a/lib_sdc-9/005_Provision.js
++++ b/lib_sdc-9/005_Provision.js
+@@ -143,6 +143,7 @@
+       customerLogoFileId:   pf.customerLogoFileId,
+       customerLogoDriveUrl: pf.customerLogoDriveUrl,
+       customerLogoUrl:      pf.customerLogoUrl,
++      customerLogoMimeType: pf.customerLogoMimeType,
+       supplierManagerEmail: pf.supplierManagerEmail,
+       configFileId:      ss.getId(),
+       configJsonFileId:  configJsonFileId,
+--- a/lib_sdc-9/008_Version.js
++++ b/lib_sdc-9/008_Version.js
+@@ -56,6 +56,11 @@
+  *         KEPT but DEPRECATED: it carries a public URL only for a workbook that still holds one in the cell, '' otherwise.
+  *         Workato turns the file ID into a displayable URL (fetch via the Drive connection, publish); the library never
+  *         resizes or normalises the image. Additive, minor bump. Validate, preview, invitations and portal-invite unchanged.
++ *  12.3 - Provision payload: added customer_logo_mime_type (string; 'image/png' or 'image/jpeg', decided from the file's
++ *         magic bytes by Logo.resolve for uploaded and pasted Drive files alike; '' for a legacy public URL or no logo).
++ *         Workato no longer has to ask Drive for the type. Deliberately NOT added to the _customer export block: that block
++ *         is inside config_fingerprint, and a new key there would make every workbook's next Update cut a new version.
++ *         Additive, minor bump. No schema change. Validate, preview, invitations and portal-invite unchanged.
+  *
+  * --- Schema version history ------------------------------------------
+  *   1.6 - 1_customer labels aligned to the v0.9.9 template; seed header/first-data-row fields added.
+@@ -94,8 +99,8 @@
+  */
+ 
+ var Version = Object.freeze({
+-  LIBRARY: '1.16.0',
+-  PAYLOAD: '12.2',
++  LIBRARY: '1.17.0',
++  PAYLOAD: '12.3',
+   SCHEMA: '1.13'
+ });
+ 
+--- a/lib_sdc-9/013_Registry.js
++++ b/lib_sdc-9/013_Registry.js
+@@ -85,9 +85,17 @@
+   return Registry._call(settings, 'post', '/workspaces/claim', body);
+ };
+ 
++/**
++ * Release a workspace. Once release runs the reset (POOL-API-06 calls the workspace's API-05 and answers when
++ * it returns), this call can run for minutes, so it asks UrlFetchApp to wait the way Provision does. A timeout here
++ * is NOT a result: the router finishes on its own and writes `available` or `needs_clean`. Re-read the row.
++ */
++Registry.RELEASE_TIMEOUT_SECONDS = 250;
++
+ Registry.release = function(settings, workspaceKey, correlationId) {
+   return Registry._call(settings, 'post', '/workspaces/' + Registry._key(workspaceKey) + '/release',
+-    { correlation_id: correlationId || Util.newCorrelationId() });
++    { correlation_id: correlationId || Util.newCorrelationId() },
++    { fetchTimeoutSeconds: Registry.RELEASE_TIMEOUT_SECONDS });
+ };
+ 
+ /**
+@@ -282,7 +290,7 @@
+   return k;
+ };
+ 
+-Registry._call = function(settings, method, path, body) {
++Registry._call = function(settings, method, path, body, opts) {
+   if (!settings || !settings.lifecycleBaseUrl) throw new Error('Registry: settings.lifecycleBaseUrl is required (_settings → router.lifecycleBaseUrl).');
+   if (!settings.apiToken)                       throw new Error('Registry: settings.apiToken is required (_settings → router.apiToken).');
+ 
+@@ -296,6 +304,8 @@
+     options.contentType = 'application/json';
+     options.payload = JSON.stringify(body);
+   }
++  // Same option Webhook.call passes for provision; only the long calls (release) set it.
++  if (opts && opts.fetchTimeoutSeconds) options.fetchTimeoutSeconds = opts.fetchTimeoutSeconds;
+ 
+   var resp   = UrlFetchApp.fetch(url, options);
+   var status = resp.getResponseCode();
+--- a/lib_sdc-9/015_Logo.js
++++ b/lib_sdc-9/015_Logo.js
+@@ -229,13 +229,14 @@
+  * @param {Spreadsheet} ss
+  * @param {Object}      config
+  * @param {string}      integrationEmail - config.sharing.integrationAccountEmail, already checked by the caller.
+- * @returns {{kind: string, fileId: ?string, driveUrl: ?string, legacyUrl: ?string, copied: boolean}}
++ * @returns {{kind: string, fileId: ?string, driveUrl: ?string, legacyUrl: ?string, mimeType: ?string, copied: boolean}}
++ *          mimeType is 'image/png' | 'image/jpeg' for a Drive file (from its bytes), null for blank and legacy.
+  */
+ Logo.resolve = function (ss, config, integrationEmail) {
+   var def = Logo._def();
+   var raw = Customer.readOne(ss, config, def.key);
+   var parsed = Logo.parseCell(raw);
+-  var out = { kind: parsed.kind, fileId: parsed.fileId, driveUrl: parsed.driveUrl, legacyUrl: parsed.legacyUrl, copied: false };
++  var out = { kind: parsed.kind, fileId: parsed.fileId, driveUrl: parsed.driveUrl, legacyUrl: parsed.legacyUrl, mimeType: null, copied: false };
+   var where = 'The "' + def.label + '" value in the ' + config.sheets.customer + ' tab';
+ 
+   if (parsed.kind === 'blank' || parsed.kind === 'legacy') return out;
+@@ -250,29 +251,40 @@
+     throw new Error(where + ' points at a Drive file you cannot open (' + parsed.fileId + '). Ask its owner to share ' +
+       'it with you, or upload the image with "Upload customer logo". Underlying error: ' + e.message);
+   }
+-  var mime = String(file.getMimeType() || '');
+-  if (!Logo.ALLOWED[mime]) {
+-    throw new Error(where + ' points at "' + file.getName() + '", which is ' + (mime || 'of unknown type') +
+-      ', not a ' + Logo._allowedList() + ' image. Upload the logo as PNG or JPEG.');
+-  }
++  // Size first: the type check below downloads the file, so an oversized one is refused before any bytes move.
+   var size = Number(file.getSize() || 0);
+   if (size > Logo.MAX_BYTES) {
+     throw new Error(where + ' points at "' + file.getName() + '", which is ' + Logo._mb(size) + ' MB; the limit for a logo is ' +
+       Logo._mb(Logo.MAX_BYTES) + ' MB. Upload a smaller export of the image.');
+   }
++  // Type from the bytes, the same rule an upload gets (validateFile). Drive's own type is whatever the uploader's
++  // browser declared, so it only improves the message. The sniffed type is what travels as customer_logo_mime_type.
++  var declared = String(file.getMimeType() || '');
++  var bytes;
++  try { bytes = file.getBlob().getBytes(); }
++  catch (e) {
++    throw new Error(where + ' points at "' + file.getName() + '", which could not be read to check its type: ' + e.message);
++  }
++  var mime = Logo.sniffMime(bytes);
++  if (!mime || !Logo.ALLOWED[mime]) {
++    throw new Error(where + ' points at "' + file.getName() + '", which is not a ' + Logo._allowedList() + ' image' +
++      (declared ? ' (Drive reports ' + declared + ')' : '') + '. Upload the logo as PNG or JPEG.');
++  }
++  out.mimeType = mime;
+   if (Logo._readableBy(file, integrationEmail)) return out;
+ 
+-  // Not readable by the principal: copy into the engagement folder and share the copy, like an upload.
++  // Not readable by the principal: copy into the engagement folder and share the copy, like an upload. The copy is
++  // built from the sniffed type, so _land names it .png / .jpg even when Drive's declared type was wrong.
+   var landed;
+   try {
+-    landed = Logo._land(ss, config, file.getBlob().setName(file.getName()), integrationEmail);
++    landed = Logo._land(ss, config, Utilities.newBlob(bytes, mime, file.getName()), integrationEmail);
+   } catch (e) {
+     throw new Error(where + ' points at "' + file.getName() + '", which the Workato account (' + integrationEmail +
+       ') cannot read, and copying it into the engagement folder failed: ' + e.message);
+   }
+   Logo._writeCell(ss, config, landed.driveUrl);
+   console.log('Customer logo ' + parsed.fileId + ' was not readable by ' + integrationEmail + '; copied as ' + landed.fileId + '.');
+-  return { kind: 'drive', fileId: landed.fileId, driveUrl: landed.driveUrl, legacyUrl: null, copied: true };
++  return { kind: 'drive', fileId: landed.fileId, driveUrl: landed.driveUrl, legacyUrl: null, mimeType: mime, copied: true };
+ };
+ 
+ /**
+--- a/app_sdc-shim-5/guide.js
++++ b/app_sdc-shim-5/guide.js
+@@ -14,7 +14,7 @@
+  *       (b) marks: when a flow shim finishes, it calls guideMark_(key, r),
+  *           which stores {at, ok, by} in Document Properties. Marks are
+  *           per-workbook and shared by everyone who opens it.
+- *   - Two kinds of action. Workbook-local ones (migrate, field pack, field IDs,
++ *   - Two kinds of action. Workbook-local ones (migrate, field pack,
+  *     cascades, portal access) ARE the existing menu functions, called by name
+  *     from the sidebar via google.script.run; their alerts and modals show over
+  *     the sheet. Router-bound ones (validate, preview, start, update,
+@@ -31,8 +31,10 @@
+  *     push steps show as not yet done until the next run. If lib_sdc keeps a
+  *     provisioned flag anywhere (e.g. _developer_settings), teach
+  *     isProvisioned_() to read it.
+- *   - 1_customer completeness is not detected here; Validate is the source
+- *     of truth for that, so the step is shown as a manual one.
++ *   - "Describe the client" ticks on presence only (SDC.Customer.missingRequired). Whether a date, a cadence or an
++ *     email is well formed is still Preflight's call at Start.
++ *   - "Send supplier invitations" is hidden until a supplier on 2_suppliers has a user on 3_users. That is the
++ *     workbook's roster; Workato's is only the same after the last Start / Update.
+  */
+ 
+ var GUIDE_PROP_PREFIX   = 'sdc.guide.';        // Document Properties: sdc.guide.<key> = JSON mark
+@@ -53,9 +55,12 @@
+   var ss    = SpreadsheetApp.getActiveSpreadsheet();
+   var facts = guideFacts_(ss);
+ 
+-  var steps = GUIDE_STEPS
++  var all = GUIDE_STEPS
+     .map(function (def) { return def(facts); })
+     .filter(function (s) { return !!s; });
++  // Two lists: the numbered checklist, and the any-time actions (kind 'action': Update, portal access).
++  var steps   = all.filter(function (s) { return s.kind !== 'action'; });
++  var actions = all.filter(function (s) { return s.kind === 'action'; });
+ 
+   // A blocking step (schema migration) greys out everything after it.
+   var blocked = false;
+@@ -64,6 +69,7 @@
+     if (s.blocksRest) blocked = true;
+     s.n = i + 1;
+   });
++  if (blocked) actions.forEach(function (s) { s.state = 'blocked'; s.actions.forEach(function (a) { a.enabled = false; }); });
+ 
+   var next = null;
+   for (var i = 0; i < steps.length; i++) {
+@@ -73,7 +79,7 @@
+   // When each router-bound action last left a mark, keyed by action. The sidebar keeps this as the baseline it
+   // polls against (guideMarkAt) after opening the progress window, so the window opens without a prior round trip.
+   var marks = {};
+-  steps.forEach(function (s) {
++  all.forEach(function (s) {
+     s.actions.forEach(function (a) {
+       if (!a.action) return;
+       var m = facts.marks[SDC.Actions.get(a.action).markKey];
+@@ -83,6 +89,7 @@
+ 
+   return {
+     steps: steps,
++    actions: actions,
+     next: next,
+     marks: marks,
+     workspace: facts.linked ? facts.workspaceKey : '',
+@@ -255,10 +262,67 @@
+     var p = SDC.Logo.parseCell(SDC.Customer.readOne(ss, config, 'customerLogo'));
+     return { kind: p.kind, fileId: p.fileId, driveUrl: p.driveUrl, legacyUrl: p.legacyUrl };
+   }, null) : null;
++  // Required 1_customer fields still blank, by the library's rule (Customer.missingRequired, the one Preflight uses).
++  // The logo is left out: it has its own step. Null = cannot tell (older library, or the workbook cannot be read).
++  f.customerMissing = config && typeof SDC.Customer.missingRequired === 'function' ? safe_(function () {
++    return SDC.Customer.missingRequired(SDC.Customer.read(ss, config))
++      .filter(function (m) { return m.type !== 'driveFile'; })
++      .map(function (m) { return m.friendly; });
++  }, null) : null;
++  // Suppliers on 2_suppliers that have a user on 3_users. Null = cannot tell.
++  f.invitable = safe_(function () { return suppliersWithUsers_(ss, config); }, null);
+   f.provisioned = isProvisioned_(f);
+   return f;
+ }
+ 
++/**
++ * Roster headers, as the template prints them on row 8 of each tab. Two headers per tab on purpose: "Supplier name"
++ * also appears on the definition row above (row 6), and findHeaderRow_ returns the first row holding every header asked for.
++ */
++var GUIDE_ROSTER = {
++  suppliers: { name: 'Supplier name', anchor: 'Template variation' },
++  users:     { email: 'Supplier user email', supplier: 'Supplier name' }
++};
++
++/**
++ * How many suppliers on 2_suppliers have at least one user on 3_users. A user counts when its row has an email and
++ * its supplier matches a supplier name (trimmed, case-insensitive). Computed here, not read from the sheet's
++ * "Number of users" column: that formula is not filled down in the template.
++ *
++ * This is the workbook's view. Workato holds the real roster, so the count is only right after the last Start / Update.
++ *
++ * @returns {?number} null when a tab or a header cannot be found.
++ */
++function suppliersWithUsers_(ss, config) {
++  var tabs = config ? config.sheets : { suppliers: '2_suppliers', users: '3_users' };
++  var S = GUIDE_ROSTER.suppliers, U = GUIDE_ROSTER.users;
++  var sup = headedRows_(ss, tabs.suppliers, [S.name, S.anchor]);
++  var usr = headedRows_(ss, tabs.users, [U.email, U.supplier]);
++  if (!sup || !usr) return null;
++
++  var hasUser = {};
++  usr.rows.forEach(function (r) {
++    var supplier = trim_(r[usr.col[U.supplier]]).toLowerCase();
++    if (supplier && trim_(r[usr.col[U.email]]) !== '') hasUser[supplier] = true;
++  });
++  var counted = {}, n = 0;
++  sup.rows.forEach(function (r) {
++    var name = trim_(r[sup.col[S.name]]).toLowerCase();
++    if (name && hasUser[name] && !counted[name]) { counted[name] = true; n++; }
++  });
++  return n;
++}
++
++/** The rows below a tab's header row, plus header text -> column index. null when the tab or the headers are missing. */
++function headedRows_(ss, sheetName, requiredHeaders) {
++  var sh = ss.getSheetByName(sheetName);
++  if (!sh) return null;
++  var values = sh.getDataRange().getValues();
++  var hr = findHeaderRow_(values, requiredHeaders);
++  if (hr === -1) return null;
++  return { col: headerMap_(values[hr]), rows: values.slice(hr + 1) };
++}
++
+ /** Swap in a library-side signal here if one exists; the marks are the fallback. */
+ function isProvisioned_(f) {
+   return okMark_(f.marks['provision:initial']) || okMark_(f.marks['provision:update']);
+@@ -294,6 +358,7 @@
+  *   optional  - available, not required (hollow marker)
+  *   manual    - a thing to do in the sheet, not something to run (hollow marker)
+  *   blocked   - not yet runnable (greyed; set here or by a blocksRest step)
++ *   action    - an any-time action, not a step (kind 'action': no marker, no number, never "Next")
+  */
+ 
+ function step_(id, phase, title, hint, state, actions, tabs, extra) {
+@@ -324,6 +389,15 @@
+   },
+ 
+   function (f) {
++    // Ticked from the cells, so a workbook that arrives filled in (created from the implementations app) starts ticked.
++    // null = cannot tell (older library, unreadable workbook): the manual step below, as before.
++    var missing = f.customerMissing;
++    if (missing !== null) {
++      return step_('customer', 'Prepare', 'Describe the client',
++        missing.length ? 'Still needed in 1_customer: ' + missing.join(', ') + '.'
++                       : 'Every required field in 1_customer is filled in.',
++        missing.length ? 'todo' : 'done', [], ['1_customer']);
++    }
+     return step_('customer', 'Prepare', 'Describe the client',
+       'Fill in 1_customer, including the supplier manager email (the client-side contact Workato receives with the configuration). Validate (below) checks it; nothing to run here.',
+       'manual', [], ['1_customer']);
+@@ -370,14 +444,8 @@
+       [SDC_MIG.FIELDS_SHEET, SDC_MIG.LOOKUPS_SHEET]);
+   },
+ 
+-  function (f) {
+-    var m = f.marks['primaryKeySetup'], done = okMark_(m);
+-    return step_('fieldIds', 'Define fields', 'Set up field IDs',
+-      done ? 'Last run ' + when_(m) + '. Safe to re-run after adding fields.'
+-           : 'Stamps the ID column every field row needs. Safe to re-run.',
+-      done ? 'done' : (f.fieldRows > 0 ? 'todo' : 'blocked'),
+-      [act_('Set up field IDs', 'setupPrimaryKeyColumns', !done, f.fieldRows > 0)], []);
+-  },
++  // No "Set up field IDs" step: Validate, Preview, Start, Update and a pack apply all stamp missing IDs
++  // (SDC.PrimaryKey.backfill), so the analyst never has to. The menu item stays under "Setup and advanced tools".
+ 
+   function (f) {
+     if (!f.cascades.declared) return null;          // flat lists only: nothing to complete
+@@ -425,16 +493,19 @@
+       f.provisioned ? [] : [act_('Start', 'initializeWorkspace', true, f.linked, 'start')], []);
+   },
+ 
++  // kind 'action' (this entry and "Request portal access" below): not part of the checklist. guideStatus returns
++  // them as a separate list, and the sidebar draws them under "Any time" with no number and no tick.
+   function (f) {
+     var m = f.marks['provision:update'];
+-    return step_('update', 'Push to Workato', 'Update configuration',
++    return step_('update', 'Any time', 'Update configuration',
+       okMark_(m) ? 'Last update ' + when_(m) + '.'
+                  : 'Re-sends the configuration after you change it.',
+-      f.provisioned ? 'optional' : 'blocked',
+-      [act_('Update', 'updateWorkspace', f.provisioned, f.provisioned, 'update')], []);
++      f.provisioned ? 'action' : 'blocked',
++      [act_('Update', 'updateWorkspace', f.provisioned, f.provisioned, 'update')], [], { kind: 'action' });
+   },
+ 
+   function (f) {
++    if (f.invitable === 0) return null;             // no supplier has a user yet: nobody to invite. null (unknown) still shows
+     var m = f.marks['invitations'], done = okMark_(m);
+     return step_('invitations', 'Push to Workato', 'Send supplier invitations',
+       done ? 'Last batch ' + when_(m) + '.' : 'Invites every pending supplier. Needs a started collection.',
+@@ -444,9 +515,9 @@
+ 
+   function (f) {
+     var m = f.marks['portalInvite'], done = okMark_(m);
+-    return step_('portal', 'Push to Workato', 'Request portal access',
++    return step_('portal', 'Any time', 'Request portal access',
+       done ? 'Requested ' + when_(m) + '.' : 'Gets you (the analyst) into the supplier portal for this application.',
+-      done ? 'done' : 'optional',
+-      [act_('Request access', 'requestPortalAccess', false)], []);
++      'action',
++      [act_('Request access', 'requestPortalAccess', false)], [], { kind: 'action' });
+   }
+ ];
+--- a/app_sdc-shim-5/guide_sidebar.html
++++ b/app_sdc-shim-5/guide_sidebar.html
+@@ -35,6 +35,8 @@
+     .title { font-weight: 500; }
+     .hint { color: var(--fg-muted); font-size: 12px; margin-top: 1px; }
+     .acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
++    .step.plain { grid-template-columns: 1fr; }           /* any-time action: no marker column */
++    .step.plain .acts { grid-column: 1; }
+ 
+     button, .chip { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+     button { border: 1px solid var(--line); background: #fff; color: var(--fg); }
+@@ -78,34 +80,44 @@
+     function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+ 
+     // --- render -----------------------------------------------------------
++    // One step or one any-time action. numbered = false leaves the marker out: an action is not something to tick off.
++    function draw(out, s, numbered) {
++      out.push('<div class="step ' + esc(s.state) + (numbered ? '' : ' plain') + '">');
++      if (numbered) out.push('<div class="mark">' + (s.state === 'done' ? '\u2713' : s.n) + '</div>');
++      out.push('<div><div class="title">' + esc(s.title) + '</div><div class="hint">' + esc(s.hint) + '</div></div>');
++      if (s.control === 'logo') out.push('<div class="acts" style="display:block"><div id="logoHost"></div></div>');
++      if (s.actions.length || s.tabs.length) {
++        out.push('<div class="acts">');
++        s.actions.forEach(function (a) {
++          out.push('<button data-fn="' + esc(a.fn) + '" data-label="' + esc(s.title) + '"' +
++            (a.action ? ' data-action="' + esc(a.action) + '"' : '') +
++            (a.primary ? ' class="primary"' : '') + (a.enabled ? '' : ' disabled') + '>' + esc(a.label) + '</button>');
++        });
++        s.tabs.forEach(function (t) {
++          out.push('<span class="chip" data-tab="' + esc(t) + '">open ' + esc(t) + '</span>');
++        });
++        out.push('</div>');
++      }
++      out.push('</div>');
++    }
++
+     function render(st) {
+       var out = [], phase = null;
+       st.steps.forEach(function (s) {
+         if (s.phase !== phase) { phase = s.phase; out.push('<div class="phase">' + esc(phase) + '</div>'); }
+-        out.push('<div class="step ' + esc(s.state) + '">');
+-        out.push('<div class="mark">' + (s.state === 'done' ? '\u2713' : s.n) + '</div>');
+-        out.push('<div><div class="title">' + esc(s.title) + '</div><div class="hint">' + esc(s.hint) + '</div></div>');
+-        if (s.control === 'logo') out.push('<div class="acts" style="display:block"><div id="logoHost"></div></div>');
+-        if (s.actions.length || s.tabs.length) {
+-          out.push('<div class="acts">');
+-          s.actions.forEach(function (a) {
+-            out.push('<button data-fn="' + esc(a.fn) + '" data-label="' + esc(s.title) + '"' +
+-              (a.action ? ' data-action="' + esc(a.action) + '"' : '') +
+-              (a.primary ? ' class="primary"' : '') + (a.enabled ? '' : ' disabled') + '>' + esc(a.label) + '</button>');
+-          });
+-          s.tabs.forEach(function (t) {
+-            out.push('<span class="chip" data-tab="' + esc(t) + '">open ' + esc(t) + '</span>');
+-          });
+-          out.push('</div>');
+-        }
+-        out.push('</div>');
++        draw(out, s, true);
+       });
++      // Any-time actions (Update, portal access): their own heading, below the checklist.
++      if (st.actions && st.actions.length) {
++        out.push('<div class="phase">Any time</div>');
++        st.actions.forEach(function (s) { draw(out, s, false); });
++      }
+       $('steps').innerHTML = out.join('');
+       st.steps.forEach(function (s) { if (s.control === 'logo') mountLogo(s); });
+ 
+       var n = $('next');
+       if (st.next) { n.className = 'next'; n.innerHTML = 'Next<b>' + esc(st.next) + '</b>'; }
+-      else { n.className = 'next all'; n.textContent = 'Nothing pending. Edit the configuration and Update, or send invitations.'; }
++      else { n.className = 'next all'; n.textContent = 'Nothing pending. Use Update after you change the configuration.'; }
+ 
+       $('ws').innerHTML = st.workspace ? 'Workspace <b>' + esc(st.workspace) + '</b>' : 'Not linked to a workspace';
+       $('ver').textContent = 'lib ' + esc(st.library) + ' \u00b7 schema ' + esc(st.schema);
+--- a/app_sdc-router-9/030_Registry.js
++++ b/app_sdc-router-9/030_Registry.js
+@@ -219,6 +219,7 @@
+       workspace_key:   key,
+       workspace:       w ? w.workspace : workspaceName_({ workspace_key: key }),
+       workspace_url:   (w && w.link_to_workspace) || '',
++      portal_url:      (w && w.link_to_portal) || '',       // RTR_Pool.link_to_portal; blank until a workspace is linked
+       workspace_state: state,
+       status:          status,
+       last_error:      (w && w.last_error) || '',
+--- a/app_sdc-router-9/Index.html
++++ b/app_sdc-router-9/Index.html
+@@ -381,7 +381,7 @@
+         sf = document.getElementById('statusFilter').value,
+         mine = document.getElementById('mine').checked,
+         me = String(CTX && CTX.user || '').toLowerCase();
+-    var html = '<table><thead><tr><th>Client</th><th>Status</th><th>Owner</th><th>Workbook</th><th>Workspace</th><th>Updated</th><th></th></tr></thead><tbody>', shown = 0;
++    var html = '<table><thead><tr><th>Client</th><th>Status</th><th>Owner</th><th>Workbook</th><th>Workspace</th><th>Portal</th><th>Updated</th><th></th></tr></thead><tbody>', shown = 0;
+     rows.forEach(function (r, i) {               // i indexes DATA.implementations, so data-i survives filtering
+       if (sf && r.status !== sf) return;
+       if (mine && String(r.owner || '').toLowerCase() !== me) return;
+@@ -398,13 +398,14 @@
+         '<td>' + (r.workspace_key
+           ? '<span class="ws-chip" title="' + esc(r.workspace_key) + '">' + (r.workspace_url ? ext(r.workspace_url, r.workspace) : esc(r.workspace)) + '</span>'
+           : '<span class="muted">Not linked</span>') + '</td>' +
++        '<td>' + (r.portal_url ? ext(r.portal_url, 'Open') : '') + '</td>' +     // only a linked implementation carries one
+         '<td class="mono">' + esc(when(r.updated_at)) + '</td>' +
+         '<td class="acts">' +
+           (r.spreadsheet_id ? '<button class="quiet" data-i="' + i + '" data-act="check">Check</button>' : '') +
+           (r._actions || []).map(function (a) { return '<button class="quiet" data-i="' + i + '" data-act="' + a + '">' + esc(IMPL_ACTION_LABEL[a] || cap(a)) + '</button>'; }).join('') +
+         '</td></tr>';
+     });
+-    if (!shown) html += '<tr><td colspan="7"><p class="empty">No implementations match your filters.</p></td></tr>';
++    if (!shown) html += '<tr><td colspan="8"><p class="empty">No implementations match your filters.</p></td></tr>';
+     host.innerHTML = html + '</tbody></table>';
+     host.querySelectorAll('button[data-act]').forEach(function (b) { b.addEventListener('click', onImplAction); });
+   }
+@@ -456,7 +457,6 @@
+              '<div class="top"><span class="name" title="' + esc(w.workspace_key) + '">' + esc(w.workspace) + '</span>' +
+              '<span class="badge ' + g.c + '" title="' + esc(w.state) + '">' + esc(g.t) + '</span></div>' +
+              '<div class="who' + (who ? '' : ' none') + '">' + (who ? esc(who) : (w.state === 'available' ? 'Ready to link' : g.t)) + '</div>' +
+-             (w.last_error ? '<div class="who bad" title="' + esc(w.last_error) + '">' + esc(w.last_error) + '</div>' : '') +
+              (pendingList(w.pending_connections).length ? '<div class="do">' + pendingBadge(w.pending_connections) + '</div>' : '') +
+              '</div>';
+     }).join('');
+@@ -489,10 +489,11 @@
+     var host = document.getElementById('poolTable'), rows = DATA.pool;
+     if (!rows.length) { host.innerHTML = '<p class="empty">' + (DATA.mode === 'live' ? 'Nothing in the registry.' : 'Registry is in dry run; workspaces are not listed.') + '</p>'; return; }
+     var cols = COLS.filter(function (c) { return rows.some(function (r) { return r[c.k] !== undefined && r[c.k] !== '' && r[c.k] !== null; }); });
+-    var html = '<table><thead><tr>' + cols.map(function (c) { return '<th>' + esc(c.t) + '</th>'; }).join('') + '<th>Workbook</th><th></th></tr></thead><tbody>';
++    var html = '<table><thead><tr>' + cols.map(function (c) { return '<th>' + esc(c.t) + '</th>'; }).join('') + '<th>Workbook</th><th>Portal</th><th></th></tr></thead><tbody>';
+     rows.forEach(function (r, i) {
+       html += '<tr>' + cols.map(function (c) { return cell(c, r[c.k]); }).join('');
+       html += '<td>' + (r.workbook_url ? ext(r.workbook_url, 'Open') : '') + '</td>';
++      html += '<td>' + (r.link_to_portal ? ext(r.link_to_portal, 'Open') : '') + '</td>';   // RTR_Pool.link_to_portal, per workspace
+       html += '<td class="acts">' + (r.golden ? '<span class="chip">golden</span>' : r.analyst_visible ? '' : '<span class="chip">dev only</span>') +
+         (r.spreadsheet_id ? '<button class="quiet" data-i="' + i + '" data-act="health" title="Check the config workbook">Check</button>' : '') +
+         (r.workspace_key && DATA.mode === 'live' ? '<button class="quiet" data-i="' + i + '" data-act="status">Status</button>' : '') +
+# ===== 2-push-after-step-7: on top of 1-push-now (release wording) =====
+--- a/app_sdc-router-9/030_Registry.js
++++ b/app_sdc-router-9/030_Registry.js
+@@ -34,7 +34,9 @@
+   // delete the project, recreate the empty project folder). It is offered wherever no client data can be at risk:
+   // needs_clean (an inactive workspace after release), and ad hoc on available / needs_connections / failed so a
+   // workspace can be re-deployed from a fresh golden. bound/active/inactive are never cleaned directly — release
+-  // first, which is where "client data has been purged" is asserted. Dry run (preview) inventories without deleting.
++  // first. Release itself now resets the client data (the router calls the workspace's API-05) and returns the row
++  // to available; needs_clean is where a release lands when that reset did not finish. Dry run (preview) inventories
++  // without deleting.
+   var ACTIONS_BY_STATE = {
+     empty: ['prepare'], failed: ['prepare', 'clean'],
+     queued: [], deploying: [], configuring: [], registering: [], cleaning: [], closing: [],
+@@ -275,6 +277,12 @@
+       return { action: op, workspaceKey: workspaceKey, correlationId: cid, dryRun: dryRun, result: result };
+     } catch (e) {
+       log('ERROR', op + (dryRun ? ' (dry run)' : '') + ' ' + workspaceKey + ' failed: ' + e.message);
++      // A release now waits for the workspace reset. An error or a timeout here does not say how it ended: the router
++      // finishes on its own and writes available or needs_clean. Re-read the pool so the page shows the real state.
++      if (op === 'release') {
++        try { refreshRegistry_(ss, settings); } catch (ignore) {}
++        throw new Error(e.message + ' The release may still be running; refresh to see where the workspace ended up.');
++      }
+       throw e;
+     }
+   }
+--- a/app_sdc-router-9/Code.js
++++ b/app_sdc-router-9/Code.js
+@@ -169,8 +169,8 @@
+ 
+ function releaseWorkspace() {
+   lifecycleAction_('Release workspace', 'release',
+-    'Clears the binding. bound → available; inactive → needs_clean (run "Clean workspace…" next to return it to empty).\n' +
+-    'For an inactive workspace, confirm the client data has been purged first.');
++    'Resets the client data in the workspace (tables, files, users, logo) and returns it to the pool: bound or inactive → available.\n' +
++    'This can take a few minutes. If the reset does not finish, the row lands on needs_clean (run "Clean workspace…" next).');
+ }
+ 
+ // --- Pool lifecycle (ops) -------------------------------------------
+--- a/app_sdc-router-9/Index.html
++++ b/app_sdc-router-9/Index.html
+@@ -520,7 +520,7 @@
+ 
+   var CONFIRM = { prepare:  'Prepare this workspace? The recipes are deployed in the background; refresh the pool to follow it.',
+                   register: 'Register this workspace? Its connections must already be authorised in Workato; this creates the API client and makes the workspace available.',
+-                  release:  'Clear this workspace’s binding? bound → available; inactive → needs cleaning (run Clean next). For an inactive workspace, confirm client data has been purged.',
++                  release:  'Release this workspace? Its client data is reset (tables, files, users and the logo) and it returns to the pool as available. This can take a few minutes. If the reset does not finish, the workspace shows as “Needs cleaning”.',
+                   close:    'Mark this implementation finished (active → inactive)? The workbook can no longer send to this workspace.',
+                   redeploy: 'Redeploy this workspace from the current golden? Its recipes are stopped, the package is re-imported into the existing project (connections and the API client are retained), then started again. The workspace cannot be claimed while this takes place.',
+                   clean_dry: 'Preview a clean of this workspace? Nothing is deleted; the list of what would be deleted appears under Status → Last job once the job finishes.',
