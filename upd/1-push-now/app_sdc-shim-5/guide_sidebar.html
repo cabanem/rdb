@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    /* Brand tokens live here. Swap for the org palette (navy / yellow / Tahoma) when you restyle. */
+    :root {
+      --fg: #202124; --fg-muted: #5f6368; --line: #e0e0e0;
+      --accent: #1a73e8; --accent-fg: #fff;
+      --done: #137333; --done-bg: #e6f4ea;
+      --warn: #b06000; --warn-bg: #fef7e0;
+      --err: #c5221f;  --err-bg: #fce8e6;
+      --chip-bg: #f1f3f4;
+    }
+    body { font: 13px/1.45 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: var(--fg); margin: 0; padding: 12px 12px 72px; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+
+    .next { padding: 8px 10px; border-radius: 6px; background: var(--chip-bg); margin-bottom: 12px; font-size: 12px; }
+    .next b { display: block; font-size: 13px; }
+    .next.all { background: var(--done-bg); color: var(--done); }
+    .next.err { background: var(--err-bg); color: var(--err); }
+    .ws { font-size: 11px; color: var(--fg-muted); margin: -4px 0 8px; }
+    .ws b { color: var(--fg); font-weight: 500; }
+
+    .phase { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--fg-muted); margin: 14px 0 6px; }
+    .phase:first-of-type { margin-top: 0; }
+
+    .step { display: grid; grid-template-columns: 22px 1fr; gap: 0 8px; padding: 6px 0; }
+    .step + .step { border-top: 1px solid var(--line); }
+    .mark { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--fg-muted); color: var(--fg-muted);
+            font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; box-sizing: border-box; }
+    .todo .mark { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+    .done .mark { background: var(--done); border-color: var(--done); color: #fff; }
+    .blocked { opacity: .5; }
+    .title { font-weight: 500; }
+    .hint { color: var(--fg-muted); font-size: 12px; margin-top: 1px; }
+    .acts { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .step.plain { grid-template-columns: 1fr; }           /* any-time action: no marker column */
+    .step.plain .acts { grid-column: 1; }
+
+    button, .chip { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+    button { border: 1px solid var(--line); background: #fff; color: var(--fg); }
+    button.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
+    button:hover:not(:disabled) { filter: brightness(.96); }
+    button:disabled { opacity: .5; cursor: default; }
+    .chip { border: 0; background: var(--chip-bg); color: var(--fg-muted); padding: 3px 8px; }
+    .chip:hover { color: var(--fg); }
+
+    .busy { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 12px; background: var(--warn-bg); color: var(--warn); font-size: 12px; display: none; }
+    .busy.on { display: block; }
+
+    .foot { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; border-top: 1px solid var(--line); padding: 8px 12px; font-size: 11px; color: var(--fg-muted); }
+    .foot .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .foot a { color: var(--accent); text-decoration: none; cursor: pointer; }
+    .foot label { display: flex; align-items: center; gap: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Data collection guide</h1>
+  <div id="ws" class="ws"></div>
+  <div id="next" class="next">Reading the workbook&hellip;</div>
+  <div id="steps"></div>
+
+  <div id="busy" class="busy"></div>
+  <!-- The customer-logo upload control, served by lib_sdc (logo_control.html) and mounted into its guide step by render(). -->
+  <?!= SDC.Logo.controlHtml() ?>
+  <div class="foot">
+    <div class="row">
+      <span id="ver"></span>
+      <a id="refresh">Refresh</a>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <span><a data-fn="assistOpen">Config assistant</a> &middot; <a data-fn="assistBuildDigest">Build corpus</a></span>
+      <label><input type="checkbox" id="auto"> open on start</label>
+    </div>
+  </div>
+
+  <script>
+    var $ = function (id) { return document.getElementById(id); };
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+    // --- render -----------------------------------------------------------
+    // One step or one any-time action. numbered = false leaves the marker out: an action is not something to tick off.
+    function draw(out, s, numbered) {
+      out.push('<div class="step ' + esc(s.state) + (numbered ? '' : ' plain') + '">');
+      if (numbered) out.push('<div class="mark">' + (s.state === 'done' ? '\u2713' : s.n) + '</div>');
+      out.push('<div><div class="title">' + esc(s.title) + '</div><div class="hint">' + esc(s.hint) + '</div></div>');
+      if (s.control === 'logo') out.push('<div class="acts" style="display:block"><div id="logoHost"></div></div>');
+      if (s.actions.length || s.tabs.length) {
+        out.push('<div class="acts">');
+        s.actions.forEach(function (a) {
+          out.push('<button data-fn="' + esc(a.fn) + '" data-label="' + esc(s.title) + '"' +
+            (a.action ? ' data-action="' + esc(a.action) + '"' : '') +
+            (a.primary ? ' class="primary"' : '') + (a.enabled ? '' : ' disabled') + '>' + esc(a.label) + '</button>');
+        });
+        s.tabs.forEach(function (t) {
+          out.push('<span class="chip" data-tab="' + esc(t) + '">open ' + esc(t) + '</span>');
+        });
+        out.push('</div>');
+      }
+      out.push('</div>');
+    }
+
+    function render(st) {
+      var out = [], phase = null;
+      st.steps.forEach(function (s) {
+        if (s.phase !== phase) { phase = s.phase; out.push('<div class="phase">' + esc(phase) + '</div>'); }
+        draw(out, s, true);
+      });
+      // Any-time actions (Update, portal access): their own heading, below the checklist.
+      if (st.actions && st.actions.length) {
+        out.push('<div class="phase">Any time</div>');
+        st.actions.forEach(function (s) { draw(out, s, false); });
+      }
+      $('steps').innerHTML = out.join('');
+      st.steps.forEach(function (s) { if (s.control === 'logo') mountLogo(s); });
+
+      var n = $('next');
+      if (st.next) { n.className = 'next'; n.innerHTML = 'Next<b>' + esc(st.next) + '</b>'; }
+      else { n.className = 'next all'; n.textContent = 'Nothing pending. Use Update after you change the configuration.'; }
+
+      $('ws').innerHTML = st.workspace ? 'Workspace <b>' + esc(st.workspace) + '</b>' : 'Not linked to a workspace';
+      $('ver').textContent = 'lib ' + esc(st.library) + ' \u00b7 schema ' + esc(st.schema);
+      $('auto').checked = !!st.autoOpen;
+      marks = st.marks || {};
+    }
+
+    function fail(e) {
+      var n = $('next');
+      n.className = 'next err';
+      n.textContent = String(e && e.message || e);
+      stopWatch();
+      busy(false);
+    }
+
+    function refresh() {
+      google.script.run.withSuccessHandler(function (st) { busy(false); render(st); }).withFailureHandler(fail).guideStatus();
+    }
+
+    // --- run an action ----------------------------------------------------
+    function busy(label) {
+      var b = $('busy');
+      b.className = 'busy' + (label ? ' on' : '');
+      b.textContent = label ? 'Running ' + label + '\u2026 any prompts open over the sheet.' : '';
+      Array.prototype.forEach.call(document.querySelectorAll('button'), function (x) {
+        if (label) { x.dataset.was = x.disabled ? '1' : ''; x.disabled = true; }
+        else if (x.dataset.was !== undefined) { x.disabled = x.dataset.was === '1'; }
+      });
+    }
+
+    function run(fn, label) {
+      busy(label || fn);
+      // The server function is one of the existing menu handlers; its alerts/modals show over the sheet,
+      // and the call returns when they close. Then re-read the workbook so the marks it left show up.
+      google.script.run.withSuccessHandler(refresh).withFailureHandler(fail)[fn]();
+    }
+
+    // Router-bound actions run in the library's progress window, which calls guideRun itself. This sidebar
+    // cannot hear that window finish (dialogs and sidebars share nothing), so it opens the window and polls the
+    // action's mark until it moves past the baseline from the last status read, then re-reads the workbook.
+    // Refresh cancels the wait.
+    var marks = {}, watch = null;
+    var WATCH_EVERY_MS = 4000, WATCH_LIMIT_MS = 7 * 60 * 1000;
+
+    function stopWatch() { if (watch) { clearTimeout(watch); watch = null; } }
+
+    function runAction(action, label) {
+      if (action === 'invitations' && !confirm('Send invitations to all pending suppliers?')) return;
+      busy(label || action);
+      var before = marks[action] || '';
+      google.script.run.withSuccessHandler(function () {
+        $('busy').textContent = 'Running ' + (label || action) + '… in the window over the sheet. The guide updates when it finishes.';
+        watchMark(action, before, Date.now());
+      }).withFailureHandler(fail).guideOpenProgress(action);
+    }
+
+    function watchMark(action, before, started) {
+      stopWatch();
+      watch = setTimeout(function () {
+        google.script.run.withSuccessHandler(function (at) {
+          if (at !== before || Date.now() - started > WATCH_LIMIT_MS) { watch = null; refresh(); }
+          else watchMark(action, before, started);
+        }).withFailureHandler(fail).guideMarkAt(action);
+      }, WATCH_EVERY_MS);
+    }
+
+    // --- customer logo -----------------------------------------------------
+    // The control lives in the step itself (a file input fits the panel); the bytes are read here, so the upload is
+    // one google.script.run call to the shim's uploadCustomerLogo global rather than a progress-window action. The
+    // analyst sees: uploading -> saved + cell updated -> the step re-read as done.
+    var logoNote = null;
+    function mountLogo(step) {
+      var host = $('logoHost');
+      if (!host || typeof SdcLogo === 'undefined') return;
+      var l = step.logo || {};
+      var cur = l.kind === 'drive'  ? { name: 'Current logo on Drive', url: l.driveUrl, fileId: l.fileId }
+              : l.kind === 'legacy' ? { name: 'Public link (the old way)', url: l.legacyUrl } : null;
+      var api = SdcLogo.mount(host, { current: cur, onFile: uploadLogo });
+      if (logoNote) { api.setStatus(logoNote.text, logoNote.kind); logoNote = null; }
+    }
+    function uploadLogo(file, api) {
+      api.setStatus('Uploading ' + file.name + '…', 'busy');
+      busy('Upload customer logo');
+      google.script.run.withSuccessHandler(function (res) {
+        var r = (res && res.result) || {};
+        if (!r.ok || !res.logo) { busy(false); api.setStatus(r.message || 'Upload failed.', 'err'); return; }
+        api.setStatus('Saved ' + res.logo.fileName + ' to Drive. ' + res.logo.cell + ' updated.', 'ok');
+        api.setCurrent({ name: res.logo.fileName, url: res.logo.driveUrl, fileId: res.logo.fileId, keepThumb: true });
+        logoNote = { text: 'Saved ' + res.logo.fileName + ' to Drive. ' + res.logo.cell + ' updated.', kind: 'ok' };
+        setTimeout(refresh, 800);                   // re-read the workbook: the step turns to done
+      }).withFailureHandler(function (e) { busy(false); api.setStatus(String(e && e.message || e), 'err'); }).uploadCustomerLogo(file);
+    }
+
+    document.body.addEventListener('click', function (e) {
+      var el = e.target.closest('[data-fn],[data-tab]');
+      if (!el || el.disabled) return;
+      if (el.dataset.action) runAction(el.dataset.action, el.dataset.label);
+      else if (el.dataset.fn) run(el.dataset.fn, el.dataset.label);
+      else google.script.run.withFailureHandler(fail).guideActivate(el.dataset.tab);
+    });
+
+    $('refresh').addEventListener('click', function () { stopWatch(); busy('refresh'); refresh(); });
+    $('auto').addEventListener('change', function () {
+      google.script.run.withFailureHandler(fail).guideSetAutoOpen($('auto').checked);
+    });
+
+    refresh();
+  </script>
+</body>
+</html>
